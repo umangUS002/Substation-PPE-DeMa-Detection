@@ -71,24 +71,26 @@ class PPEDataset(Dataset):
             return boxes, labels
 
         if class_mapping is None:
-            # Default Roboflow mapping for PPE datasets
-            class_mapping = {0: 1, 1: 1, 2: 2, 3: 3} # Maps class IDs to Helmet (1), Gloves (2), Footwear (3)
+            # Dataset mapping for target classes: Helmet (1), Gloves (2), Footwear (3)
+            # Class 3 = Helmet/Hardhat, Class 1 = Gloves, Class 0 = Footwear/Boots
+            class_mapping = {3: 1, 1: 2, 0: 3}
 
         with open(txt_path, 'r') as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) >= 5:
                     cls_id = int(parts[0])
-                    xc, yc, w, h = [float(x) for x in parts[1:5]]
+                    if cls_id in class_mapping:
+                        target_label = class_mapping[cls_id]
+                        xc, yc, w, h = [float(x) for x in parts[1:5]]
 
-                    xmin = (xc - w / 2.0) * img_width
-                    ymin = (yc - h / 2.0) * img_height
-                    xmax = (xc + w / 2.0) * img_width
-                    ymax = (yc + h / 2.0) * img_height
+                        xmin = (xc - w / 2.0) * img_width
+                        ymin = (yc - h / 2.0) * img_height
+                        xmax = (xc + w / 2.0) * img_width
+                        ymax = (yc + h / 2.0) * img_height
 
-                    target_label = class_mapping.get(cls_id, 1 if cls_id in [0, 1] else (2 if cls_id == 2 else 3))
-                    boxes.append([xmin, ymin, xmax, ymax])
-                    labels.append(target_label)
+                        boxes.append([xmin, ymin, xmax, ymax])
+                        labels.append(target_label)
 
         return boxes, labels
 
