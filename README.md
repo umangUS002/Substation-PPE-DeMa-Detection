@@ -84,6 +84,25 @@ python detect.py --source input_video.mp4
 ```bash
 python train.py --epochs 20 --batch-size 4
 ```
+Training automatically holds out `--val-split` (default 15%) of the images for
+validation, applies a cosine-annealing LR schedule by default (`--lr-scheduler
+{none,cosine,step}`), and saves two checkpoints to `models/`:
+- `last_ssd_vgg16.pt` — latest epoch, used by `--resume`
+- `best_ssd_vgg16.pt` — the epoch with the lowest validation loss so far (used by `detect.py` / `run_demo.py`)
+
+Data augmentation (`data/augmentation.py`) applies color jitter plus geometric
+transforms (random horizontal flip, random crop/scale jitter), keeping
+bounding boxes aligned with the transformed image.
+
+### 5. Evaluate Model (mAP)
+```bash
+python eval.py --weights models/best_ssd_vgg16.pt --data-dir data/sample_dataset
+```
+Reports mAP@0.5 and mAP@0.5:0.95 (COCO-style, all-point interpolation) plus
+per-class AP on the same held-out validation split used during training —
+using the same metric definitions Ultralytics reports for YOLOv8
+(`mAP50`/`mAP50-95`), so results can be directly compared against a YOLOv8m
+benchmark run on the same dataset.
 
 ---
 

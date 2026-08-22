@@ -19,9 +19,17 @@ def build_ssd_vgg16_model(num_classes: int = len(TARGET_CLASSES_SSD), pretrained
     """
     Constructs an SSD300 model with VGG-16 backbone.
     Adjusts the classification head to target PPE classes.
+
+    pretrained=False is used at call sites that load a full state_dict right
+    after construction (--resume, loading a custom checkpoint), so the
+    ImageNet-pretrained backbone weights torchvision would otherwise download
+    by default are skipped too — they'd just be overwritten anyway.
     """
-    weights = SSD300_VGG16_Weights.DEFAULT if pretrained else None
-    model = ssd300_vgg16(weights=weights)
+    if pretrained:
+        # weights=DEFAULT already implies fully-pretrained backbone weights.
+        model = ssd300_vgg16(weights=SSD300_VGG16_Weights.DEFAULT)
+    else:
+        model = ssd300_vgg16(weights=None, weights_backbone=None)
 
     # Retrieve in_channels list and num_anchors from existing SSD classification head
     in_channels = [module.in_channels for module in model.head.classification_head.module_list]

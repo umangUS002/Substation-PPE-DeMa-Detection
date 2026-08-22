@@ -5,6 +5,7 @@ Focused on Helmet, Gloves, and Footwear categories.
 """
 
 import os
+import random
 import xml.etree.ElementTree as ET
 import torch
 from torch.utils.data import Dataset
@@ -29,7 +30,9 @@ class PPEDataset(Dataset):
 
         self.image_files = []
         if os.path.exists(images_dir):
-            self.image_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+            # Sorted for a deterministic file order, so a fixed-seed train/val
+            # split (see split_indices below) lands on the same images every run.
+            self.image_files = sorted(f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png')))
 
     def __len__(self):
         return len(self.image_files)
@@ -125,23 +128,21 @@ class PPEDataset(Dataset):
             boxes, labels = [], []
 
         target_w, target_h = self.augmenter.target_size
-        scale_x = target_w / max(float(orig_w), 1.0)
-        scale_y = target_h / max(float(orig_h), 1.0)
 
         if self.augment:
-            image = self.augmenter.apply_augmentation(image)
+            image, boxes, labels = self.augmenter.apply_augmentation(image, boxes, labels)
         else:
-            image = self.augmenter.resize_standard(image)
+            image, boxes = self.augmenter.resize_standard(image, boxes)
 
-        # Scale and strictly clamp bounding boxes to target dimensions
+        # Strictly clamp bounding boxes to target dimensions (flip/crop can push them to the edge)
         valid_boxes = []
         valid_labels = []
 
         for box, label in zip(boxes, labels):
-            x1 = max(0.0, min(box[0] * scale_x, target_w - 1.0))
-            y1 = max(0.0, min(box[1] * scale_y, target_h - 1.0))
-            x2 = max(x1 + 1.0, min(box[2] * scale_x, float(target_w)))
-            y2 = max(y1 + 1.0, min(box[3] * scale_y, float(target_h)))
+            x1 = max(0.0, min(box[0], target_w - 1.0))
+            y1 = max(0.0, min(box[1], target_h - 1.0))
+            x2 = max(x1 + 1.0, min(box[2], float(target_w)))
+            y2 = max(y1 + 1.0, min(box[3], float(target_h)))
 
             if (x2 - x1) >= 1.0 and (y2 - y1) >= 1.0:
                 valid_boxes.append([x1, y1, x2, y2])
@@ -157,3 +158,18 @@ class PPEDataset(Dataset):
         }
 
         return img_tensor, target
+
+
+def split_indices(n: int, val_ratio: float = 0.15, seed: int = 42):
+    """
+    Deterministic train/val index split. Given two PPEDataset instances built
+    from the same images_dir (one with augment=True, one augment=False), apply
+    the returned indices to each via torch.utils.data.Subset so training gets
+    augmentation and validation stays on clean, fixed images.
+    """
+    indices = list(range(n))
+    random.Random(seed).shuffle(indices)
+    val_size = int(n * val_ratio) if n > 1 else 0
+    val_indices = indices[:val_size]
+    train_indices = indices[val_size:]
+    return train_indices, val_indices
