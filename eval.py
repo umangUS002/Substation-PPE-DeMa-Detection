@@ -18,7 +18,10 @@ import torch
 from torch.utils.data import Subset
 
 from models.ssd_vgg16 import build_ssd_vgg16_model
-from data.dataset_loader import PPEDataset, LABEL_TO_ID, ID_TO_LABEL, split_indices
+from data.dataset_loader import (
+    PPEDataset, LABEL_TO_ID, ID_TO_LABEL, split_indices,
+    find_data_yaml, load_class_mapping, resolve_split_dirs,
+)
 
 
 def box_iou(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
@@ -143,20 +146,42 @@ def main():
         model.load_state_dict(checkpoint)
     model.to(device)
 
-    images_path = os.path.join(args.data_dir, "images")
-    annotations_path = os.path.join(args.data_dir, "annotations")
-    full_dataset = PPEDataset(images_dir=images_path, annotations_dir=annotations_path, augment=False)
+    data_yaml = find_data_yaml(args.data_dir)
+    class_mapping = None
+    if data_yaml:
+        class_mapping, unmatched = load_class_mapping(data_yaml)
+        print(f"[INFO] Loaded class mapping from '{data_yaml}': {class_mapping}")
+        if unmatched:
+            print(f"[INFO] Ignoring non-target classes in data.yaml: {unmatched}")
 
-    if len(full_dataset) == 0:
-        raise SystemExit(f"No images found in '{images_path}'.")
+    splits = resolve_split_dirs(args.data_dir)
+    if splits["train"] is None:
+        raise SystemExit(f"No dataset found under '{args.data_dir}' (looked for 'test/images/', 'valid/images/', or 'images/').")
 
-    _, val_indices = split_indices(len(full_dataset), val_ratio=args.val_split)
-    if not val_indices:
-        print("[WARN] val-split produced 0 images; evaluating on the full dataset instead "
-              "(scores will be optimistic - not a true held-out result).")
-        val_dataset = full_dataset
+    if splits["test"] is not None:
+        eval_images, eval_ann = splits["test"]
+        print(f"[INFO] Evaluating on the dataset's own held-out test split: '{eval_images}'")
+        val_dataset = PPEDataset(images_dir=eval_images, annotations_dir=eval_ann, augment=False, class_mapping=class_mapping)
+    elif splits["val"] is not None:
+        eval_images, eval_ann = splits["val"]
+        print(f"[INFO] No test split found - evaluating on the dataset's val split: '{eval_images}'")
+        val_dataset = PPEDataset(images_dir=eval_images, annotations_dir=eval_ann, augment=False, class_mapping=class_mapping)
     else:
-        val_dataset = Subset(full_dataset, val_indices)
+        # Flat layout: reproduce the same deterministic split train.py used.
+        train_images, train_ann = splits["train"]
+        full_dataset = PPEDataset(images_dir=train_images, annotations_dir=train_ann, augment=False, class_mapping=class_mapping)
+        if len(full_dataset) == 0:
+            raise SystemExit(f"No images found in '{train_images}'.")
+        _, val_indices = split_indices(len(full_dataset), val_ratio=args.val_split)
+        if not val_indices:
+            print("[WARN] val-split produced 0 images; evaluating on the full dataset instead "
+                  "(scores will be optimistic - not a true held-out result).")
+            val_dataset = full_dataset
+        else:
+            val_dataset = Subset(full_dataset, val_indices)
+
+    if len(val_dataset) == 0:
+        raise SystemExit("Evaluation split has 0 images.")
 
     iou_thresholds = [round(x, 2) for x in np.arange(0.5, 1.0, 0.05)]
     results = run_evaluation(model, val_dataset, device, iou_thresholds, args.conf_threshold)

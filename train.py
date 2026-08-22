@@ -14,7 +14,10 @@ import torch
 from torch.utils.data import Subset
 import matplotlib.pyplot as plt
 from models.ssd_vgg16 import build_ssd_vgg16_model, MultiBoxLoss
-from data.dataset_loader import PPEDataset, LABEL_TO_ID, split_indices
+from data.dataset_loader import (
+    PPEDataset, LABEL_TO_ID, split_indices,
+    find_data_yaml, load_class_mapping, resolve_split_dirs,
+)
 
 
 def compute_val_loss(model, dataloader, device):
@@ -45,9 +48,9 @@ def build_scheduler(optimizer, name: str, epochs: int):
 
 
 def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models", resume=False,
-                 val_split=0.15, lr_scheduler="cosine"):
+                 val_split=0.15, lr_scheduler="cosine", results_dir="results"):
     os.makedirs(save_dir, exist_ok=True)
-    os.makedirs("results", exist_ok=True)
+    os.makedirs(results_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Starting training on device: {device}", flush=True)
@@ -81,22 +84,55 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
     scheduler = build_scheduler(optimizer, lr_scheduler, epochs)
 
-    images_path = os.path.join(data_dir, "images")
-    annotations_path = os.path.join(data_dir, "annotations")
+    # data.yaml (Roboflow/YOLO export) tells us the real class id -> name mapping;
+    # without it, YOLO .txt annotations fall back to a hardcoded 3-class mapping
+    # that only matches this repo's original sample dataset.
+    data_yaml = find_data_yaml(data_dir)
+    class_mapping = None
+    if data_yaml:
+        class_mapping, unmatched = load_class_mapping(data_yaml)
+        print(f"[INFO] Loaded class mapping from '{data_yaml}': {class_mapping}", flush=True)
+        if unmatched:
+            print(f"[INFO] Ignoring non-target classes in data.yaml: {unmatched}", flush=True)
+        if not class_mapping:
+            print(f"[WARN] None of the classes in '{data_yaml}' matched Helmet/Gloves/Footwear "
+                  f"after alias normalization -- check dema_engine/ppe_rules.py's CLASS_ALIASES.", flush=True)
 
-    # Two dataset views over the same (sorted, so index-aligned) file list:
-    # the augmented one feeds training, the clean one feeds validation.
-    train_dataset_full = PPEDataset(images_dir=images_path, annotations_dir=annotations_path, augment=True)
-    val_dataset_full = PPEDataset(images_dir=images_path, annotations_dir=annotations_path, augment=False)
+    splits = resolve_split_dirs(data_dir)
 
-    if len(train_dataset_full) == 0:
-        print(f"[WARN] No training images found in '{images_path}'. Running mock synthetic training step for verification.", flush=True)
-        history = simulate_synthetic_training(epochs, save_dir)
+    if splits["train"] is None:
+        print(f"[WARN] No dataset found under '{data_dir}' (looked for 'train/images/' or 'images/'). "
+              f"Running mock synthetic training step for verification.", flush=True)
+        history = simulate_synthetic_training(epochs, save_dir, results_dir)
         return history
 
-    train_indices, val_indices = split_indices(len(train_dataset_full), val_ratio=val_split)
-    train_dataset = Subset(train_dataset_full, train_indices)
-    val_dataset = Subset(val_dataset_full, val_indices) if val_indices else None
+    train_images, train_ann = splits["train"]
+
+    if splits["val"] is not None:
+        # Roboflow-style layout: use its own curated train/valid split directly
+        # rather than re-splitting (it's already been stratified for us).
+        val_images, val_ann = splits["val"]
+        train_dataset = PPEDataset(images_dir=train_images, annotations_dir=train_ann, augment=True, class_mapping=class_mapping)
+        val_dataset_full = PPEDataset(images_dir=val_images, annotations_dir=val_ann, augment=False, class_mapping=class_mapping)
+        val_dataset = val_dataset_full if len(val_dataset_full) > 0 else None
+    else:
+        # Flat layout (images/ + annotations/): derive our own train/val split.
+        train_dataset_full = PPEDataset(images_dir=train_images, annotations_dir=train_ann, augment=True, class_mapping=class_mapping)
+        val_dataset_all = PPEDataset(images_dir=train_images, annotations_dir=train_ann, augment=False, class_mapping=class_mapping)
+
+        if len(train_dataset_full) == 0:
+            print(f"[WARN] No training images found in '{train_images}'. Running mock synthetic training step for verification.", flush=True)
+            history = simulate_synthetic_training(epochs, save_dir, results_dir)
+            return history
+
+        train_indices, val_indices = split_indices(len(train_dataset_full), val_ratio=val_split)
+        train_dataset = Subset(train_dataset_full, train_indices)
+        val_dataset = Subset(val_dataset_all, val_indices) if val_indices else None
+
+    if len(train_dataset) == 0:
+        print(f"[WARN] No training images found under '{data_dir}'. Running mock synthetic training step for verification.", flush=True)
+        history = simulate_synthetic_training(epochs, save_dir, results_dir)
+        return history
 
     dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -114,19 +150,20 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
         )
         print(f"[INFO] Train/val split: {len(train_dataset)} train / {len(val_dataset)} val images", flush=True)
     else:
-        print(f"[WARN] Dataset too small for a val split ({len(train_dataset_full)} images) - "
+        print(f"[WARN] Dataset too small for a val split ({len(train_dataset)} images) - "
               f"'{best_path}' will just track the latest epoch, not a true best.", flush=True)
 
     # Check if dataset has annotation boxes
     sample_boxes = 0
-    for idx in range(min(10, len(train_dataset_full))):
-        _, target = train_dataset_full[idx]
+    for idx in range(min(10, len(train_dataset))):
+        _, target = train_dataset[idx]
         sample_boxes += len(target.get("boxes", []))
 
     if sample_boxes == 0:
-        print(f"\n[WARNING] 0 bounding box annotations (.xml / .txt) found in sample images of '{data_dir}'.", flush=True)
+        print(f"\n[WARNING] 0 bounding box annotations found in sample images under '{train_images}' / '{train_ann}'.", flush=True)
         print(f"[WARNING] Because targets are empty, training loss will stay 0.0000.", flush=True)
-        print(f"[WARNING] Please place your annotation files (.xml or .txt) into '{annotations_path}' or '{data_dir}/labels/'.\n", flush=True)
+        print(f"[WARNING] If this is a YOLO dataset, check that data.yaml's class names matched "
+              f"(see the class mapping logged above) and that '{train_ann}' has one .txt per image.\n", flush=True)
 
     total_batches = len(dataloader)
     conf_losses = []
@@ -205,10 +242,10 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
     print(f"[SAVE] Saved best model checkpoint (by val loss) to: '{best_path}'", flush=True)
 
     # Plot Loss Curves matching Fig 6 in paper
-    plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses)
+    plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses, results_dir)
     return {"conf_loss": conf_losses, "loc_loss": loc_losses, "total_loss": total_losses, "val_loss": val_losses}
 
-def simulate_synthetic_training(epochs, save_dir):
+def simulate_synthetic_training(epochs, save_dir, results_dir="results"):
     """Simulates training loss decline matching Fig. 6 in the paper for demonstration."""
     import numpy as np
     steps = np.linspace(1.2, 0.15, epochs)
@@ -217,13 +254,13 @@ def simulate_synthetic_training(epochs, save_dir):
     loc_losses = (steps * 0.4 + np.abs(noise)).tolist()
     total_losses = [c + l for c, l in zip(conf_losses, loc_losses)]
 
-    plot_loss_curves(conf_losses, loc_losses, total_losses)
+    plot_loss_curves(conf_losses, loc_losses, total_losses, results_dir=results_dir)
     weights_path = os.path.join(save_dir, "best_ssd_vgg16.pt")
     torch.save({"synthetic": True}, weights_path)
     print(f"[SAVE] Created mock weights file at '{weights_path}'")
     return {"conf_loss": conf_losses, "loc_loss": loc_losses, "total_loss": total_losses}
 
-def plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses=None):
+def plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses=None, results_dir="results"):
     fig, axes = plt.subplots(3, 1, figsize=(8, 10))
 
     axes[0].plot(conf_losses, color='orange', label='Classification Loss')
@@ -242,7 +279,8 @@ def plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses=None):
     axes[2].grid(True)
 
     plt.tight_layout()
-    plot_path = os.path.join("results", "training_loss_curves.png")
+    os.makedirs(results_dir, exist_ok=True)
+    plot_path = os.path.join(results_dir, "training_loss_curves.png")
     plt.savefig(plot_path)
     plt.close()
     print(f"[SAVE] Saved loss visualization curves to: '{plot_path}'")
@@ -257,8 +295,11 @@ if __name__ == "__main__":
     parser.add_argument("--val-split", type=float, default=0.15, help="Fraction of images held out for validation")
     parser.add_argument("--lr-scheduler", type=str, default="cosine", choices=["none", "cosine", "step"],
                          help="Learning rate schedule applied across epochs")
+    parser.add_argument("--save-dir", type=str, default="models", help="Where checkpoints are written (point this at a Drive path in Colab)")
+    parser.add_argument("--results-dir", type=str, default="results", help="Where the loss-curve plot is written")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint weights")
     args = parser.parse_args()
 
     train_model(data_dir=args.data_dir, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
-                resume=args.resume, val_split=args.val_split, lr_scheduler=args.lr_scheduler)
+                save_dir=args.save_dir, resume=args.resume, val_split=args.val_split,
+                lr_scheduler=args.lr_scheduler, results_dir=args.results_dir)
