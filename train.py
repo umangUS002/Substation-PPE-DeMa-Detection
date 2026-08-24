@@ -49,7 +49,7 @@ def build_scheduler(optimizer, name: str, epochs: int):
 
 
 def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models", resume=False,
-                 val_split=0.15, lr_scheduler="cosine", results_dir="results", patience=15):
+                 val_split=0.15, lr_scheduler="cosine", results_dir="results", patience=5):
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
 
@@ -346,7 +346,7 @@ if __name__ == "__main__":
                          help="Learning rate schedule applied across epochs")
     parser.add_argument("--save-dir", type=str, default="models", help="Where checkpoints are written (point this at a Drive path in Colab)")
     parser.add_argument("--results-dir", type=str, default="results", help="Where the loss-curve plot is written")
-    parser.add_argument("--patience", type=int, default=15,
+    parser.add_argument("--patience", type=int, default=5,
                          help="Stop early if val loss hasn't improved for this many epochs (0 = disabled, run all --epochs)")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint weights")
     args = parser.parse_args()
