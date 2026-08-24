@@ -8,6 +8,7 @@ Implements training configuration described in Section IV-B of paper:
 """
 
 import argparse
+import csv
 import os
 import time
 import torch
@@ -170,6 +171,8 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
     loc_losses = []
     total_losses = []
     val_losses = []
+    lr_history = []
+    history_csv_path = os.path.join(results_dir, "training_history.csv")
     best_val_loss = float("inf")
     best_epoch = 0
     epochs_without_improvement = 0
@@ -181,6 +184,7 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
     start_time = time.time()
 
     for epoch in range(1, epochs + 1):
+        current_lr = optimizer.param_groups[0]['lr']
         epoch_conf = 0.0
         epoch_loc = 0.0
         epoch_total = 0.0
@@ -216,8 +220,10 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
         conf_losses.append(avg_conf)
         loc_losses.append(avg_loc)
         total_losses.append(avg_tot)
+        lr_history.append(current_lr)
 
-        log_line = f"Epoch [{epoch:02d}/{epochs}] - Total Loss: {avg_tot:.4f} | Class Loss: {avg_conf:.4f} | Loc Loss: {avg_loc:.4f}"
+        log_line = (f"Epoch [{epoch:02d}/{epochs}] - Total Loss: {avg_tot:.4f} | Class Loss: {avg_conf:.4f} "
+                    f"| Loc Loss: {avg_loc:.4f} | LR: {current_lr:.6f}")
 
         # Save latest checkpoint every epoch (for --resume)
         torch.save(model.state_dict(), last_path)
@@ -241,9 +247,12 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
 
         if scheduler is not None:
             scheduler.step()
-            log_line += f" | LR: {optimizer.param_groups[0]['lr']:.6f}"
 
         print(log_line, flush=True)
+
+        # Rewritten every epoch (not just at the end) so a killed/disconnected
+        # session on Kaggle/Colab still leaves a usable history file behind.
+        write_history_csv(history_csv_path, conf_losses, loc_losses, total_losses, val_losses, lr_history)
 
         if early_stopping_enabled and epochs_without_improvement >= patience:
             print(f"\n[INFO] No val-loss improvement for {patience} epochs (best={best_val_loss:.4f} "
@@ -254,10 +263,26 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
     print(f"\n[OK] Training completed in {elapsed:.2f} seconds.", flush=True)
     print(f"[SAVE] Saved latest model checkpoint to: '{last_path}'", flush=True)
     print(f"[SAVE] Saved best model checkpoint (by val loss) to: '{best_path}'", flush=True)
+    print(f"[SAVE] Saved per-epoch training history to: '{history_csv_path}'", flush=True)
 
     # Plot Loss Curves matching Fig 6 in paper
-    plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses, results_dir)
-    return {"conf_loss": conf_losses, "loc_loss": loc_losses, "total_loss": total_losses, "val_loss": val_losses}
+    plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses, results_dir, lr_history)
+    return {"conf_loss": conf_losses, "loc_loss": loc_losses, "total_loss": total_losses,
+            "val_loss": val_losses, "lr": lr_history}
+
+def write_history_csv(path, conf_losses, loc_losses, total_losses, val_losses, lr_history):
+    """
+    One row per completed epoch. lr_history holds a real per-epoch LR value
+    (captured before that epoch's optimizer steps ran) -- not the final LR
+    repeated for every row.
+    """
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "class_loss", "loc_loss", "total_loss", "val_loss", "lr"])
+        for i in range(len(total_losses)):
+            val = val_losses[i] if i < len(val_losses) else ""
+            lr = lr_history[i] if i < len(lr_history) else ""
+            writer.writerow([i + 1, conf_losses[i], loc_losses[i], total_losses[i], val, lr])
 
 def simulate_synthetic_training(epochs, save_dir, results_dir="results"):
     """Simulates training loss decline matching Fig. 6 in the paper for demonstration."""
@@ -267,15 +292,19 @@ def simulate_synthetic_training(epochs, save_dir, results_dir="results"):
     conf_losses = (steps * 0.6 + np.abs(noise)).tolist()
     loc_losses = (steps * 0.4 + np.abs(noise)).tolist()
     total_losses = [c + l for c, l in zip(conf_losses, loc_losses)]
+    lr_history = np.linspace(0.0001, 0.00001, epochs).tolist()
 
-    plot_loss_curves(conf_losses, loc_losses, total_losses, results_dir=results_dir)
+    plot_loss_curves(conf_losses, loc_losses, total_losses, results_dir=results_dir, lr_history=lr_history)
+    os.makedirs(results_dir, exist_ok=True)
+    write_history_csv(os.path.join(results_dir, "training_history.csv"),
+                       conf_losses, loc_losses, total_losses, [], lr_history)
     weights_path = os.path.join(save_dir, "best_ssd_vgg16.pt")
     torch.save({"synthetic": True}, weights_path)
     print(f"[SAVE] Created mock weights file at '{weights_path}'")
     return {"conf_loss": conf_losses, "loc_loss": loc_losses, "total_loss": total_losses}
 
-def plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses=None, results_dir="results"):
-    fig, axes = plt.subplots(3, 1, figsize=(8, 10))
+def plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses=None, results_dir="results", lr_history=None):
+    fig, axes = plt.subplots(4, 1, figsize=(8, 13))
 
     axes[0].plot(conf_losses, color='orange', label='Classification Loss')
     axes[0].set_title('Classification Loss')
@@ -289,8 +318,14 @@ def plot_loss_curves(conf_losses, loc_losses, total_losses, val_losses=None, res
     if val_losses:
         axes[2].plot(val_losses, color='blue', label='Total Loss (val)')
         axes[2].legend()
-    axes[2].set_title('Total Loss')
+    axes[2].set_title('Total Loss (train vs val)')
     axes[2].grid(True)
+
+    if lr_history:
+        axes[3].plot(lr_history, color='green', label='Learning Rate')
+        axes[3].set_title('Learning Rate')
+        axes[3].set_xlabel('Epoch')
+        axes[3].grid(True)
 
     plt.tight_layout()
     os.makedirs(results_dir, exist_ok=True)

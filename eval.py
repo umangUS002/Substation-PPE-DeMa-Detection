@@ -11,8 +11,10 @@ Usage:
 """
 
 import argparse
+import json
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import Subset
@@ -48,22 +50,18 @@ def average_precision(recall: np.ndarray, precision: np.ndarray) -> float:
     return float(np.sum((mrec[idx + 1] - mrec[idx]) * mpre[idx + 1]))
 
 
-def ap_for_class(preds, gts_by_image, iou_thresh):
+def _cumulative_tp_fp(preds, gts_by_image, iou_thresh):
     """
-    preds: list of (image_idx, score, box) for one class, across all images.
-    gts_by_image: dict image_idx -> np.ndarray[N, 4] ground-truth boxes for that class.
-    Returns None if the class has no ground-truth boxes at all (undefined AP).
+    Sorted-by-score cumulative TP/FP arrays, shared by ap_for_class() and
+    pr_curve_for_class() so the matching logic (each GT box claimable once,
+    IoU >= iou_thresh) only lives in one place.
     """
-    n_positive = sum(len(v) for v in gts_by_image.values())
-    if n_positive == 0:
-        return None
-
-    preds = sorted(preds, key=lambda p: -p[1])
-    tp = np.zeros(len(preds))
-    fp = np.zeros(len(preds))
+    preds_sorted = sorted(preds, key=lambda p: -p[1])
+    tp = np.zeros(len(preds_sorted))
+    fp = np.zeros(len(preds_sorted))
     matched = {img_idx: np.zeros(len(boxes), dtype=bool) for img_idx, boxes in gts_by_image.items()}
 
-    for i, (img_idx, _score, box) in enumerate(preds):
+    for i, (img_idx, _score, box) in enumerate(preds_sorted):
         gt_boxes = gts_by_image.get(img_idx)
         if gt_boxes is None or len(gt_boxes) == 0:
             fp[i] = 1
@@ -76,28 +74,54 @@ def ap_for_class(preds, gts_by_image, iou_thresh):
         else:
             fp[i] = 1
 
-    tp_cum = np.cumsum(tp)
-    fp_cum = np.cumsum(fp)
+    return np.cumsum(tp), np.cumsum(fp)
+
+
+def ap_for_class(preds, gts_by_image, iou_thresh):
+    """
+    preds: list of (image_idx, score, box) for one class, across all images.
+    gts_by_image: dict image_idx -> np.ndarray[N, 4] ground-truth boxes for that class.
+    Returns None if the class has no ground-truth boxes at all (undefined AP).
+    """
+    n_positive = sum(len(v) for v in gts_by_image.values())
+    if n_positive == 0:
+        return None
+    tp_cum, fp_cum = _cumulative_tp_fp(preds, gts_by_image, iou_thresh)
     recall = tp_cum / n_positive
     precision = tp_cum / np.clip(tp_cum + fp_cum, 1e-9, None)
     return average_precision(recall, precision)
 
 
+def pr_curve_for_class(preds, gts_by_image, iou_thresh):
+    """Returns (recall, precision) arrays for plotting, or None if no GT boxes."""
+    n_positive = sum(len(v) for v in gts_by_image.values())
+    if n_positive == 0:
+        return None
+    tp_cum, fp_cum = _cumulative_tp_fp(preds, gts_by_image, iou_thresh)
+    recall = tp_cum / n_positive
+    precision = tp_cum / np.clip(tp_cum + fp_cum, 1e-9, None)
+    return recall, precision
+
+
 @torch.no_grad()
 def collect_predictions(model, dataset, device, conf_threshold=0.01):
     """
-    Runs inference once over the whole dataset and returns raw per-class
-    predictions/ground-truth, so both the AP curve and the threshold sweep
-    below can reuse the same pass instead of re-running the model twice.
+    Runs inference once over the whole dataset. Returns:
+      preds_by_class: {class_id: [(image_idx, score, box), ...]}
+      gts_by_class:   {class_id: {image_idx: np.ndarray[N,4]}}
+      preds_by_image: {image_idx: [(class_id, score, box), ...]}   (for the confusion matrix)
+      gts_by_image:   {image_idx: [(class_id, box), ...]}          (for the confusion matrix)
     conf_threshold should stay very low (default 0.01) here — it's just the
     floor for what counts as a "prediction" at all; the AP curve needs the
-    full range of scores to integrate over, and the threshold sweep filters
-    down from this pool per confidence level.
+    full range of scores to integrate over, and the threshold sweep / confusion
+    matrix filter down from this pool per confidence level.
     """
     model.eval()
     class_ids = [c for c in ID_TO_LABEL if c != 0]
     preds_by_class = {c: [] for c in class_ids}
     gts_by_class = {c: {} for c in class_ids}
+    preds_by_image = {}
+    gts_by_image = {}
 
     for idx in range(len(dataset)):
         image, target = dataset[idx]
@@ -107,16 +131,20 @@ def collect_predictions(model, dataset, device, conf_threshold=0.01):
         labels = output["labels"].cpu().numpy()
         scores = output["scores"].cpu().numpy()
 
+        img_preds = []
         for box, label, score in zip(boxes, labels, scores):
             if score >= conf_threshold and int(label) in preds_by_class:
                 preds_by_class[int(label)].append((idx, float(score), box))
+                img_preds.append((int(label), float(score), box))
+        preds_by_image[idx] = img_preds
 
         gt_boxes = target["boxes"].numpy()
         gt_labels = target["labels"].numpy()
         for c in class_ids:
             gts_by_class[c][idx] = gt_boxes[gt_labels == c]
+        gts_by_image[idx] = list(zip(gt_labels.tolist(), gt_boxes))
 
-    return preds_by_class, gts_by_class
+    return preds_by_class, gts_by_class, preds_by_image, gts_by_image
 
 
 def compute_map(preds_by_class, gts_by_class, iou_thresholds):
@@ -134,7 +162,7 @@ def compute_map(preds_by_class, gts_by_class, iou_thresholds):
 
 def run_evaluation(model, dataset, device, iou_thresholds, conf_threshold=0.01):
     """Kept for backward compatibility: collect + compute_map in one call."""
-    preds_by_class, gts_by_class = collect_predictions(model, dataset, device, conf_threshold)
+    preds_by_class, gts_by_class, _, _ = collect_predictions(model, dataset, device, conf_threshold)
     return compute_map(preds_by_class, gts_by_class, iou_thresholds)
 
 
@@ -193,10 +221,103 @@ def threshold_sweep(preds_by_class, gts_by_class, iou_thresh, conf_thresholds):
     return rows
 
 
+def build_confusion_matrix(preds_by_image, gts_by_image, iou_thresh, conf_thresh):
+    """
+    Class-confusion matrix at a fixed confidence threshold. Rows = ground-truth
+    class, columns = predicted class, plus a "background" row (false-positive
+    predictions matching no GT box) and "background" column (missed/unmatched
+    GT boxes, i.e. false negatives). Matching is per-image and greedy by score
+    across ALL classes at once (unlike the per-class AP matching above), so it
+    can actually surface cross-class confusion -- e.g. a Helmet GT box that a
+    Gloves prediction incorrectly claimed -- not just presence/absence.
+    """
+    class_names = [ID_TO_LABEL[c] for c in sorted(ID_TO_LABEL) if c != 0]
+    names = class_names + ["background"]
+    idx_of = {name: i for i, name in enumerate(names)}
+    matrix = np.zeros((len(names), len(names)), dtype=int)
+
+    for img_idx, gt_list in gts_by_image.items():
+        preds = [p for p in preds_by_image.get(img_idx, []) if p[1] >= conf_thresh]
+        preds = sorted(preds, key=lambda p: -p[1])
+        gt_matched = [False] * len(gt_list)
+        gt_boxes = np.array([g[1] for g in gt_list], dtype=float) if gt_list else None
+
+        for label, _score, box in preds:
+            pred_name = ID_TO_LABEL[label]
+            if gt_boxes is None:
+                matrix[idx_of["background"], idx_of[pred_name]] += 1
+                continue
+            ious = box_iou(box, gt_boxes)
+            best = int(np.argmax(ious))
+            if ious[best] >= iou_thresh and not gt_matched[best]:
+                gt_matched[best] = True
+                gt_name = ID_TO_LABEL[gt_list[best][0]]
+                matrix[idx_of[gt_name], idx_of[pred_name]] += 1
+            else:
+                matrix[idx_of["background"], idx_of[pred_name]] += 1
+
+        for matched, (label, _box) in zip(gt_matched, gt_list):
+            if not matched:
+                matrix[idx_of[ID_TO_LABEL[label]], idx_of["background"]] += 1
+
+    return matrix, names
+
+
+def plot_pr_curves(preds_by_class, gts_by_class, iou_thresh, results_dir):
+    plt.figure(figsize=(7, 6))
+    any_curve = False
+    for c, preds in preds_by_class.items():
+        curve = pr_curve_for_class(preds, gts_by_class[c], iou_thresh)
+        if curve is None:
+            continue
+        recall, precision = curve
+        plt.plot(recall, precision, label=ID_TO_LABEL[c])
+        any_curve = True
+
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title(f"Precision-Recall Curves @ IoU {iou_thresh}")
+    plt.xlim(0, 1)
+    plt.ylim(0, 1.05)
+    plt.grid(True)
+    if any_curve:
+        plt.legend()
+    plt.tight_layout()
+    os.makedirs(results_dir, exist_ok=True)
+    path = os.path.join(results_dir, "pr_curves.png")
+    plt.savefig(path)
+    plt.close()
+    return path
+
+
+def plot_confusion_matrix(matrix, names, results_dir):
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(matrix, cmap="Blues")
+    ax.set_xticks(range(len(names)))
+    ax.set_yticks(range(len(names)))
+    ax.set_xticklabels(names, rotation=45, ha="right")
+    ax.set_yticklabels(names)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Ground Truth")
+    ax.set_title("Confusion Matrix")
+    for i in range(len(names)):
+        for j in range(len(names)):
+            ax.text(j, i, str(matrix[i, j]), ha="center", va="center",
+                     color="white" if matrix[i, j] > matrix.max() / 2 else "black")
+    fig.colorbar(im, ax=ax)
+    plt.tight_layout()
+    os.makedirs(results_dir, exist_ok=True)
+    path = os.path.join(results_dir, "confusion_matrix.png")
+    plt.savefig(path)
+    plt.close()
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate SSD-VGG16 PPE model: mAP@0.5 and mAP@0.5:0.95")
     parser.add_argument("--weights", type=str, default="models/best_ssd_vgg16.pt")
     parser.add_argument("--data-dir", type=str, default="data/sample_dataset")
+    parser.add_argument("--results-dir", type=str, default="results", help="Where eval_results.json / pr_curves.png / confusion_matrix.png are written")
     parser.add_argument("--val-split", type=float, default=0.15, help="Must match the split used at training time")
     parser.add_argument("--conf-threshold", type=float, default=0.01, help="Low threshold recommended for mAP curves")
     args = parser.parse_args()
@@ -258,8 +379,10 @@ def main():
         raise SystemExit("Evaluation split has 0 images.")
 
     iou_thresholds = [round(x, 2) for x in np.arange(0.5, 1.0, 0.05)]
-    # Single inference pass — reused for both the AP curve and the threshold sweep below.
-    preds_by_class, gts_by_class = collect_predictions(model, val_dataset, device, args.conf_threshold)
+    # Single inference pass — reused for AP, the threshold sweep, PR curves, and the confusion matrix.
+    preds_by_class, gts_by_class, preds_by_image, gts_by_image = collect_predictions(
+        model, val_dataset, device, args.conf_threshold
+    )
     results = compute_map(preds_by_class, gts_by_class, iou_thresholds)
 
     def mean_ap(class_aps):
@@ -291,9 +414,47 @@ def main():
     best_row = max(sweep_rows, key=lambda r: r["f1"])
     print(f"\n[SUGGESTED THRESHOLD] conf>={best_row['conf']:.2f} gives the best F1 ({best_row['f1']:.4f}) "
           f"among {sweep_thresholds} -- a reasonable starting point for --conf-threshold in detect.py.")
-    print(f"\nPer-class breakdown at conf>={best_row['conf']:.2f}:")
-    for cname, (p, r, f1) in best_row["per_class"].items():
-        print(f"  {cname:12s}: precision={p:.4f} recall={r:.4f} f1={f1:.4f}")
+
+    # Combined per-class table: Class | Precision | Recall | AP@0.50 | #GT | #predictions
+    print(f"\n[PER-CLASS TABLE] (Precision/Recall @ conf>={best_row['conf']:.2f}, AP @ IoU 0.5)")
+    print(f"  {'Class':12s} | {'Precision':>9} | {'Recall':>7} | {'AP@0.50':>7} | {'#GT':>6} | {'#Preds':>8}")
+    per_class_table = []
+    for c in sorted(preds_by_class):
+        cname = ID_TO_LABEL[c]
+        p, r, _f1 = best_row["per_class"][cname]
+        ap = results[0.5].get(cname, 0.0)
+        n_gt = sum(len(v) for v in gts_by_class[c].values())
+        n_pred = len(preds_by_class[c])
+        print(f"  {cname:12s} | {p:>9.4f} | {r:>7.4f} | {ap:>7.4f} | {n_gt:>6} | {n_pred:>8}")
+        per_class_table.append({"class": cname, "precision": p, "recall": r, "ap50": ap,
+                                 "num_ground_truth": n_gt, "num_predictions": n_pred})
+
+    # PR curves + confusion matrix artifacts
+    pr_path = plot_pr_curves(preds_by_class, gts_by_class, iou_thresh=0.5, results_dir=args.results_dir)
+    print(f"\n[SAVE] Saved PR curves to: '{pr_path}'")
+
+    confusion_matrix, confusion_names = build_confusion_matrix(
+        preds_by_image, gts_by_image, iou_thresh=0.5, conf_thresh=best_row["conf"]
+    )
+    cm_path = plot_confusion_matrix(confusion_matrix, confusion_names, results_dir=args.results_dir)
+    print(f"[SAVE] Saved confusion matrix (@ conf>={best_row['conf']:.2f}) to: '{cm_path}'")
+
+    # Full results dump for the paper / later comparison
+    os.makedirs(args.results_dir, exist_ok=True)
+    results_path = os.path.join(args.results_dir, "eval_results.json")
+    with open(results_path, "w") as f:
+        json.dump({
+            "weights": args.weights,
+            "num_val_images": len(val_dataset),
+            "map50": map50,
+            "map50_95": map_50_95,
+            "ap_by_iou": {str(t): v for t, v in results.items()},
+            "threshold_sweep": sweep_rows,
+            "suggested_threshold": best_row["conf"],
+            "per_class_table": per_class_table,
+            "confusion_matrix": {"labels": confusion_names, "matrix": confusion_matrix.tolist()},
+        }, f, indent=2)
+    print(f"[SAVE] Saved full evaluation results to: '{results_path}'")
 
 
 if __name__ == "__main__":
