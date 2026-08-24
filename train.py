@@ -48,7 +48,7 @@ def build_scheduler(optimizer, name: str, epochs: int):
 
 
 def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models", resume=False,
-                 val_split=0.15, lr_scheduler="cosine", results_dir="results"):
+                 val_split=0.15, lr_scheduler="cosine", results_dir="results", patience=15):
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
 
@@ -171,6 +171,11 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
     total_losses = []
     val_losses = []
     best_val_loss = float("inf")
+    best_epoch = 0
+    epochs_without_improvement = 0
+    early_stopping_enabled = patience > 0 and val_dataloader is not None
+    if patience > 0 and val_dataloader is None:
+        print(f"[INFO] --patience={patience} requested but there's no val split to early-stop on; ignoring.", flush=True)
 
     model.train()
     start_time = time.time()
@@ -224,8 +229,12 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                best_epoch = epoch
+                epochs_without_improvement = 0
                 torch.save(model.state_dict(), best_path)
                 log_line += "  [NEW BEST]"
+            else:
+                epochs_without_improvement += 1
         else:
             # No val split available — fall back to "latest epoch" as before.
             torch.save(model.state_dict(), best_path)
@@ -235,6 +244,11 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
             log_line += f" | LR: {optimizer.param_groups[0]['lr']:.6f}"
 
         print(log_line, flush=True)
+
+        if early_stopping_enabled and epochs_without_improvement >= patience:
+            print(f"\n[INFO] No val-loss improvement for {patience} epochs (best={best_val_loss:.4f} "
+                  f"at epoch {best_epoch}). Stopping early at epoch {epoch}/{epochs}.", flush=True)
+            break
 
     elapsed = time.time() - start_time
     print(f"\n[OK] Training completed in {elapsed:.2f} seconds.", flush=True)
@@ -297,9 +311,11 @@ if __name__ == "__main__":
                          help="Learning rate schedule applied across epochs")
     parser.add_argument("--save-dir", type=str, default="models", help="Where checkpoints are written (point this at a Drive path in Colab)")
     parser.add_argument("--results-dir", type=str, default="results", help="Where the loss-curve plot is written")
+    parser.add_argument("--patience", type=int, default=15,
+                         help="Stop early if val loss hasn't improved for this many epochs (0 = disabled, run all --epochs)")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint weights")
     args = parser.parse_args()
 
     train_model(data_dir=args.data_dir, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
                 save_dir=args.save_dir, resume=args.resume, val_split=args.val_split,
-                lr_scheduler=args.lr_scheduler, results_dir=args.results_dir)
+                lr_scheduler=args.lr_scheduler, results_dir=args.results_dir, patience=args.patience)

@@ -84,7 +84,16 @@ def ap_for_class(preds, gts_by_image, iou_thresh):
 
 
 @torch.no_grad()
-def run_evaluation(model, dataset, device, iou_thresholds, conf_threshold=0.01):
+def collect_predictions(model, dataset, device, conf_threshold=0.01):
+    """
+    Runs inference once over the whole dataset and returns raw per-class
+    predictions/ground-truth, so both the AP curve and the threshold sweep
+    below can reuse the same pass instead of re-running the model twice.
+    conf_threshold should stay very low (default 0.01) here — it's just the
+    floor for what counts as a "prediction" at all; the AP curve needs the
+    full range of scores to integrate over, and the threshold sweep filters
+    down from this pool per confidence level.
+    """
     model.eval()
     class_ids = [c for c in ID_TO_LABEL if c != 0]
     preds_by_class = {c: [] for c in class_ids}
@@ -107,16 +116,81 @@ def run_evaluation(model, dataset, device, iou_thresholds, conf_threshold=0.01):
         for c in class_ids:
             gts_by_class[c][idx] = gt_boxes[gt_labels == c]
 
+    return preds_by_class, gts_by_class
+
+
+def compute_map(preds_by_class, gts_by_class, iou_thresholds):
+    """AP per class at each IoU threshold, using every collected prediction."""
     per_iou_results = {}
     for iou_t in iou_thresholds:
         class_aps = {}
-        for c in class_ids:
+        for c in preds_by_class:
             ap = ap_for_class(preds_by_class[c], gts_by_class[c], iou_t)
             if ap is not None:
                 class_aps[ID_TO_LABEL[c]] = ap
         per_iou_results[iou_t] = class_aps
-
     return per_iou_results
+
+
+def run_evaluation(model, dataset, device, iou_thresholds, conf_threshold=0.01):
+    """Kept for backward compatibility: collect + compute_map in one call."""
+    preds_by_class, gts_by_class = collect_predictions(model, dataset, device, conf_threshold)
+    return compute_map(preds_by_class, gts_by_class, iou_thresholds)
+
+
+def precision_recall_at_threshold(preds, gts_by_image, iou_thresh, conf_thresh):
+    """
+    Precision/recall/F1 for one class using only predictions with score >=
+    conf_thresh — i.e. "if I actually deployed at this confidence cutoff,
+    what would I see?" (unlike AP, which sweeps every threshold at once).
+    """
+    n_positive = sum(len(v) for v in gts_by_image.values())
+    filtered = sorted((p for p in preds if p[1] >= conf_thresh), key=lambda p: -p[1])
+    matched = {img_idx: np.zeros(len(boxes), dtype=bool) for img_idx, boxes in gts_by_image.items()}
+
+    tp = fp = 0
+    for img_idx, _score, box in filtered:
+        gt_boxes = gts_by_image.get(img_idx)
+        if gt_boxes is None or len(gt_boxes) == 0:
+            fp += 1
+            continue
+        ious = box_iou(box, gt_boxes)
+        best = int(np.argmax(ious))
+        if ious[best] >= iou_thresh and not matched[img_idx][best]:
+            tp += 1
+            matched[img_idx][best] = True
+        else:
+            fp += 1
+
+    fn = n_positive - tp
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / n_positive if n_positive > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    return precision, recall, f1, tp, fp, fn
+
+
+def threshold_sweep(preds_by_class, gts_by_class, iou_thresh, conf_thresholds):
+    """
+    Precision/recall/F1 per class and micro-averaged overall, at each
+    confidence threshold in conf_thresholds — the practical "what threshold
+    should I actually deploy at" report.
+    """
+    rows = []
+    for conf_t in conf_thresholds:
+        per_class = {}
+        tp_total = fp_total = fn_total = 0
+        for c, preds in preds_by_class.items():
+            p, r, f1, tp, fp, fn = precision_recall_at_threshold(preds, gts_by_class[c], iou_thresh, conf_t)
+            per_class[ID_TO_LABEL[c]] = (p, r, f1)
+            tp_total += tp
+            fp_total += fp
+            fn_total += fn
+
+        micro_p = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0.0
+        micro_r = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0.0
+        micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r) if (micro_p + micro_r) > 0 else 0.0
+        rows.append({"conf": conf_t, "per_class": per_class, "precision": micro_p, "recall": micro_r, "f1": micro_f1})
+    return rows
 
 
 def main():
@@ -184,7 +258,9 @@ def main():
         raise SystemExit("Evaluation split has 0 images.")
 
     iou_thresholds = [round(x, 2) for x in np.arange(0.5, 1.0, 0.05)]
-    results = run_evaluation(model, val_dataset, device, iou_thresholds, args.conf_threshold)
+    # Single inference pass — reused for both the AP curve and the threshold sweep below.
+    preds_by_class, gts_by_class = collect_predictions(model, val_dataset, device, args.conf_threshold)
+    results = compute_map(preds_by_class, gts_by_class, iou_thresholds)
 
     def mean_ap(class_aps):
         return float(np.mean(list(class_aps.values()))) if class_aps else 0.0
@@ -201,6 +277,23 @@ def main():
     missing = set(LABEL_TO_ID) - {"background"} - set(results[0.5])
     if missing:
         print(f"\n[NOTE] No ground-truth boxes for {sorted(missing)} in the validation split - AP undefined for them.")
+
+    # Practical "what should I actually deploy at" report — AP sweeps every
+    # threshold internally, but doesn't tell you what a fixed cutoff looks like.
+    sweep_thresholds = [0.10, 0.25, 0.50, 0.75, 0.90]
+    sweep_rows = threshold_sweep(preds_by_class, gts_by_class, iou_thresh=0.5, conf_thresholds=sweep_thresholds)
+
+    print("\n[THRESHOLD SWEEP] Precision / Recall / F1 @ IoU 0.5 (micro-averaged across classes):")
+    print(f"  {'conf>=':>7} | {'precision':>9} | {'recall':>7} | {'f1':>7}")
+    for row in sweep_rows:
+        print(f"  {row['conf']:>7.2f} | {row['precision']:>9.4f} | {row['recall']:>7.4f} | {row['f1']:>7.4f}")
+
+    best_row = max(sweep_rows, key=lambda r: r["f1"])
+    print(f"\n[SUGGESTED THRESHOLD] conf>={best_row['conf']:.2f} gives the best F1 ({best_row['f1']:.4f}) "
+          f"among {sweep_thresholds} -- a reasonable starting point for --conf-threshold in detect.py.")
+    print(f"\nPer-class breakdown at conf>={best_row['conf']:.2f}:")
+    for cname, (p, r, f1) in best_row["per_class"].items():
+        print(f"  {cname:12s}: precision={p:.4f} recall={r:.4f} f1={f1:.4f}")
 
 
 if __name__ == "__main__":
