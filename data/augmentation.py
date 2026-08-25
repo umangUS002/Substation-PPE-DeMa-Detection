@@ -10,7 +10,7 @@ dropped if they no longer have meaningful area.
 """
 
 import random
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance,ImageFilter
 
 
 class FewShotAugmenter:
@@ -42,11 +42,36 @@ class FewShotAugmenter:
         return resized, scaled_boxes
 
     def _color_jitter(self, image: Image.Image) -> Image.Image:
-        """Brightness / contrast / sharpness jittering. Does not move box coordinates."""
+        """
+        Stronger appearance augmentation for better generalization
+        under different lighting/camera conditions.
+        """
         img = image.copy()
-        img = ImageEnhance.Brightness(img).enhance(random.uniform(0.8, 1.2))
-        img = ImageEnhance.Contrast(img).enhance(random.uniform(0.8, 1.2))
-        img = ImageEnhance.Sharpness(img).enhance(random.uniform(0.8, 1.3))
+
+        # Brightness
+        img = ImageEnhance.Brightness(img).enhance(
+            random.uniform(0.70, 1.30)
+        )
+
+        # Contrast
+        img = ImageEnhance.Contrast(img).enhance(
+            random.uniform(0.70, 1.30)
+        )
+
+        # Color / saturation
+        img = ImageEnhance.Color(img).enhance(
+            random.uniform(0.75, 1.25)
+        )
+
+        # Sharpness
+        img = ImageEnhance.Sharpness(img).enhance(
+            random.uniform(0.70, 1.40)
+        )
+
+        # Occasionally simulate slightly blurred camera frames
+        if random.random() < 0.15:
+            img = img.filter(ImageFilter.GaussianBlur(radius=0.6))
+
         return img
 
     def _horizontal_flip(self, image: Image.Image, boxes: list, labels: list):

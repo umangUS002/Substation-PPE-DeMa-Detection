@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from torch.utils.data import Subset
 
-from models.ssd_vgg16 import build_ssd_vgg16_model
+from models.ssd_vgg16_old import build_ssd_vgg16_model
 from data.dataset_loader import (
     PPEDataset, LABEL_TO_ID, ID_TO_LABEL, split_indices,
     find_data_yaml, load_class_mapping, resolve_split_dirs,
