@@ -14,7 +14,7 @@ import time
 import torch
 from torch.utils.data import Subset
 import matplotlib.pyplot as plt
-from models.ssd_vgg16_old import build_ssd_vgg16_model, MultiBoxLoss
+from models.ssd_vgg16 import build_ssd_vgg16_model, MultiBoxLoss
 from data.dataset_loader import (
     PPEDataset, LABEL_TO_ID, split_indices,
     find_data_yaml, load_class_mapping, resolve_split_dirs,
