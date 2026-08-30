@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Industrial Substation PPE DeMa Operations Center (20+ Camera Feeds)</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+    <!-- Top Operational Navbar -->
+    <header class="navbar">
+        <div class="brand-section">
+            <div class="brand-logo">⚡</div>
+            <div class="brand-title">
+                SUBSTATION SAFETY CONTROL CENTER
+                <span class="brand-badge">24 CAMERAS LIVE</span>
+            </div>
+        </div>
+
+        <div class="header-metrics">
+            <div class="metric-pill">
+                <div class="metric-label">System Time</div>
+                <div class="metric-value" id="live-clock">--:--:--</div>
+            </div>
+
+            <div class="metric-pill">
+                <div class="metric-label">Plant Compliance</div>
+                <div class="metric-value safe" id="top-compliance-val">--%</div>
+            </div>
+
+            <div class="metric-pill">
+                <div class="metric-label">Critical Alerts</div>
+                <div class="metric-value warning" id="top-alerts-val">0</div>
+            </div>
+
+            <button class="btn-primary" id="btn-toggle-sound" style="background: rgba(255, 171, 0, 0.2); border: 1px solid var(--accent-amber); color: var(--accent-amber);">
+                🔊 Audio Alert: ON
+            </button>
+        </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="tab-camera-grid">
+            📹 Camera Matrix View (24 Feeds)
+        </button>
+        <button class="tab-btn" data-tab="tab-incidents">
+            🚨 Live Incident Stream <span class="tab-badge" id="badge-incident-count">0</span>
+        </button>
+        <button class="tab-btn" data-tab="tab-analytics">
+            📊 Safety Analytics & KPIs
+        </button>
+        <button class="tab-btn" data-tab="tab-management">
+            ⚙️ Camera & Zone Config
+        </button>
+        <button class="tab-btn" data-tab="tab-audit">
+            📑 Worker Audit & CSV Export
+        </button>
+    </nav>
+
+    <main class="main-container">
+
+        <!-- TAB 1: MULTI-CAMERA MATRIX VIEW (24 CAMERAS) -->
+        <section class="tab-pane active" id="tab-camera-grid">
+            <div class="toolbar-bar">
+                <div class="filter-group">
+                    <label style="color: var(--text-secondary); font-weight: 600;">Zone Filter:</label>
+                    <select class="filter-select" id="filter-zone">
+                        <option value="ALL">All Zones (24 Cameras)</option>
+                        <option value="HV Switchyard">HV Switchyard</option>
+                        <option value="Transformer Yard">Transformer Yard</option>
+                        <option value="Control Building">Control Building</option>
+                        <option value="Switchgear Hall">Switchgear Hall</option>
+                        <option value="Maintenance Yard">Maintenance Yard</option>
+                        <option value="Plant Entrance">Plant Entrance</option>
+                        <option value="Solar Array Field">Solar Array Field</option>
+                    </select>
+
+                    <label style="color: var(--text-secondary); font-weight: 600; margin-left: 10px;">Compliance Filter:</label>
+                    <select class="filter-select" id="filter-status">
+                        <option value="ALL">All Statuses</option>
+                        <option value="VIOLATION">⚠️ Violations Only</option>
+                        <option value="COMPLIANT">✅ Compliant Only</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <input type="text" class="search-input" id="search-camera" placeholder="Search camera name or ID...">
+                    <button class="btn-primary" id="btn-refresh-grid">🔄 Refresh Streams</button>
+                </div>
+            </div>
+
+            <!-- 24-Camera Dynamic Grid Container -->
+            <div class="camera-grid" id="camera-grid-container">
+                <!-- Camera Cards Rendered Dynamically via JS -->
+            </div>
+        </section>
+
+        <!-- TAB 2: LIVE INCIDENT STREAM LOG -->
+        <section class="tab-pane" id="tab-incidents">
+            <div class="toolbar-bar">
+                <h3 style="color: var(--text-primary);">Real-Time Safety Non-Compliance Event Stream</h3>
+                <button class="btn-primary" id="btn-refresh-incidents">🔄 Refresh Logs</button>
+            </div>
+
+            <div class="data-table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Event ID</th>
+                            <th>Timestamp</th>
+                            <th>Camera</th>
+                            <th>Industrial Zone</th>
+                            <th>Hazard Level</th>
+                            <th>Worker ID</th>
+                            <th>Missing Mandatory PPE</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="incidents-table-body">
+                        <!-- Dynamic Rows -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- TAB 3: SAFETY ANALYTICS & KPIS -->
+        <section class="tab-pane" id="tab-analytics">
+            <div class="analytics-grid">
+                <div class="kpi-card">
+                    <div class="kpi-title">Active Monitored Feeds</div>
+                    <div class="kpi-num" id="kpi-cams">24 / 24</div>
+                    <div style="font-size: 11px; color: var(--accent-emerald);">100% Operational Uptime</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-title">Overall Plant Compliance Rate</div>
+                    <div class="kpi-num" style="color: var(--accent-emerald);" id="kpi-compliance">97.4%</div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">DeMa Standard: Helmet, Gloves, Boots</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-title">Total Automated Inspections Today</div>
+                    <div class="kpi-num" id="kpi-scans">14,280</div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">Continuous frame verification</div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-title">Active Safety Violations</div>
+                    <div class="kpi-num" style="color: var(--accent-crimson);" id="kpi-violations">2</div>
+                    <div style="font-size: 11px; color: var(--accent-crimson);">Requires safety supervisor action</div>
+                </div>
+            </div>
+
+            <div class="charts-row">
+                <div class="chart-card">
+                    <div class="chart-header">24-Hour Industrial Safety Compliance Rate (%)</div>
+                    <canvas id="chart-compliance-trend" height="220"></canvas>
+                </div>
+
+                <div class="chart-card">
+                    <div class="chart-header">Missing Mandatory PPE Items Frequency</div>
+                    <canvas id="chart-ppe-breakdown" height="220"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 4: CAMERA & ZONE CONFIG MANAGEMENT -->
+        <section class="tab-pane" id="tab-management">
+            <div class="toolbar-bar">
+                <h3>Plant Industrial Camera Registry</h3>
+                <button class="btn-primary" onclick="alert('Camera auto-discovery enabled for 24 channels.')">+ Add RTSP Stream</button>
+            </div>
+
+            <div class="data-table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Camera ID</th>
+                            <th>Name</th>
+                            <th>Plant Zone</th>
+                            <th>Hazard Protocol</th>
+                            <th>Stream Source</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="management-table-body">
+                        <!-- Dynamic Camera Settings -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- TAB 5: WORKER AUDIT LOG & CSV EXPORT -->
+        <section class="tab-pane" id="tab-audit">
+            <div class="toolbar-bar">
+                <h3>Safety Audit Records & Compliance Reports</h3>
+                <a href="/api/export/csv" download="industrial_ppe_audit_log.csv" class="btn-primary" style="text-decoration: none;">
+                    📥 Download Audit CSV Report
+                </a>
+            </div>
+
+            <div class="data-table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Worker ID</th>
+                            <th>Department</th>
+                            <th>Safety Score</th>
+                            <th>Total Scans</th>
+                            <th>Total Violations</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>WRK-1001</td><td>High Voltage Electrical</td><td><strong style="color:var(--accent-emerald);">98.5%</strong></td><td>1,420</td><td>1</td></tr>
+                        <tr><td>WRK-1002</td><td>Substation Maintenance</td><td><strong style="color:var(--accent-emerald);">96.8%</strong></td><td>1,210</td><td>2</td></tr>
+                        <tr><td>WRK-1003</td><td>Relay & Protection</td><td><strong style="color:var(--accent-emerald);">99.2%</strong></td><td>1,890</td><td>0</td></tr>
+                        <tr><td>WRK-1004</td><td>Transformer Overhaul</td><td><strong style="color:var(--accent-emerald);">97.4%</strong></td><td>1,150</td><td>1</td></tr>
+                        <tr><td>WRK-1005</td><td>Grid Safety Inspection</td><td><strong style="color:var(--accent-emerald);">100.0%</strong></td><td>2,040</td><td>0</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Camera Spotlight Modal View -->
+    <div class="modal-overlay" id="spotlight-modal">
+        <div class="modal-box">
+            <div class="modal-header">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="font-weight: 700; color: var(--accent-cyan);" id="modal-cam-id">CAM-01</span>
+                    <span style="color: var(--text-secondary);" id="modal-cam-name">Substation Bay 1</span>
+                </div>
+                <button class="modal-close" id="btn-close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div style="background: #000; border-radius: 8px; overflow: hidden; height: 380px;">
+                    <img id="modal-stream-img" src="" style="width: 100%; height: 100%; object-fit: cover;">
+                </div>
+                <div style="display:flex; flex-direction:column; gap: 14px;">
+                    <div style="background: var(--bg-card); padding: 14px; border-radius: 8px; border: 1px solid var(--border-color);">
+                        <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase;">Zone & Hazard Standard</div>
+                        <div style="font-weight: 700; font-size: 15px; margin-top: 4px;" id="modal-zone">HV Switchyard</div>
+                        <div style="font-size: 12px; color: var(--accent-amber); margin-top: 2px;" id="modal-hazard">Level_2_High_Risk (Helmet, Gloves, Boots)</div>
+                    </div>
+
+                    <div style="background: var(--bg-card); padding: 14px; border-radius: 8px; border: 1px solid var(--border-color);">
+                        <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase;">Current Live Status</div>
+                        <div id="modal-status-badge" style="margin-top: 6px;">COMPLIANT</div>
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;" id="modal-alert-msg">All required PPE detected.</div>
+                    </div>
+
+                    <div style="background: var(--bg-card); padding: 14px; border-radius: 8px; border: 1px solid var(--border-color);">
+                        <div style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase;">Assigned Worker</div>
+                        <div style="font-weight: 700; color: var(--accent-cyan); margin-top: 4px;" id="modal-worker-id">WRK-1002</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/app.js"></script>
+</body>
+</html>

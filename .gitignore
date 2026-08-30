@@ -1,76 +1,54 @@
-# Byte-compiled / optimized / DLL files
+# Dependencies
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+build/
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual Environments
-venv/
+# Environments
 .venv/
+venv/
 env/
 ENV/
-env.bak/
-venv.bak/
 
-# IDE & OS specific files
+# IDE & System
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-*.swp
-*.swo
+*.log
 
-# Large Model Weights & Checkpoints (Keep repository lightweight)
+# Database files
+*.db
+*.sqlite3
+database/*.db
+database/*.sqlite3
+
+# Datasets & raw media
+data/my_dataset/
+data/*/
+!data/__pycache__/
+output/
+runs/
+*.mp4
+*.avi
+*.mkv
+
+# Model weights & checkpoints
 models/*.pt
 models/*.pth
 models/*.onnx
 models/*.weights
-models/*.bin
-models/*.engine
-models/*.ckpt
-!models/.gitkeep
+*.pt
+*.pth
+*.onnx
 
-# Datasets (Raw images & annotations)
-data/my_dataset/
-data/sample_dataset/
-*.zip
-*.tar
-*.gz
-*.rar
-
-# Output & Detection results generated during runs
-output/*.jpg
-output/*.png
-output/*.mp4
-output/*.avi
-!output/.gitkeep
-
+# Training / evaluation output graphs & figures (optional if you don't want them in git)
 results/*.png
 results/*.jpg
-!results/.gitkeep
-
-# Logs & Training runs
-*.log
-runs/
-wandb/
