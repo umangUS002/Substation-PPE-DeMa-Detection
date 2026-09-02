@@ -61,6 +61,9 @@
         <button class="tab-btn" data-tab="tab-audit">
             📑 Worker Audit & CSV Export
         </button>
+        <button class="tab-btn" data-tab="tab-fire-ash" style="border-bottom: 2px solid var(--accent-amber); color: var(--accent-amber);">
+            🔥 Fire & Ash Detection
+        </button>
     </nav>
 
     <main class="main-container">
@@ -225,6 +228,34 @@
                         <tr><td>WRK-1005</td><td>Grid Safety Inspection</td><td><strong style="color:var(--accent-emerald);">100.0%</strong></td><td>2,040</td><td>0</td></tr>
                     </tbody>
                 </table>
+            </div>
+        </section>
+
+        <!-- TAB 6: FIRE & ASH DETECTION -->
+        <section class="tab-pane" id="tab-fire-ash">
+            <div class="toolbar-bar">
+                <h3 style="color: var(--text-primary);">🔥 Thermal Plant Fire & Ash Detection Monitor</h3>
+                <button class="btn-primary" id="btn-fire-settings" style="background: rgba(255, 171, 0, 0.2); border: 1px solid var(--accent-amber); color: var(--accent-amber);">⚙️ Context Gate Mapping</button>
+            </div>
+            
+            <div class="analytics-grid" style="margin-bottom: 20px;">
+                <div class="kpi-card">
+                    <div class="kpi-title">3D CNN Status</div>
+                    <div class="kpi-num" style="color: var(--accent-amber);">OFFLINE</div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">Waiting for model weights...</div>
+                </div>
+                <div class="kpi-card">
+                    <div class="kpi-title">Active Context Gates</div>
+                    <div class="kpi-num">12 Zones</div>
+                    <div style="font-size: 11px; color: var(--text-secondary);">Suppressing steam vents</div>
+                </div>
+            </div>
+
+            <div class="camera-grid" id="fire-camera-grid" style="min-height: 300px; display: flex; align-items: center; justify-content: center; background: var(--bg-card); border-radius: 8px; border: 1px dashed var(--border-color);">
+                <div style="color: var(--text-secondary); padding: 20px; text-align: center;">
+                    <h4 style="margin-bottom: 10px;">[System Initialization]</h4>
+                    Waiting for 3D CNN Fire & Ash model deployment to stream thermal plant feeds...
+                </div>
             </div>
         </section>
 
