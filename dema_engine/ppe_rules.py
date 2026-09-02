@@ -4,7 +4,7 @@ Supports both YOLO trained models and SSD-VGG16 models.
 """
 
 # Target PPE Classes
-TARGET_CLASSES = ["Helmet", "Footwear"]
+TARGET_CLASSES = ["Helmet", "Footwear", "Gloves"]
 
 # Mapping of class aliases and non-compliance aliases to standard names
 CLASS_ALIASES = {
@@ -20,6 +20,9 @@ CLASS_ALIASES = {
     "leather boots": "Footwear",
     "no-footwear": "NO-Footwear",
     "no-boots": "NO-Footwear",
+    "gloves": "Gloves",
+    "glove": "Gloves",
+    "no-gloves": "NO-Gloves",
     "person": "Person",
     "human": "Person",
     "worker": "Person",
@@ -33,11 +36,11 @@ HAZARD_LEVEL_REQUIREMENTS = {
     "Level_1_Standard": {
         "description": "Standard Substation Inspection",
         "required": {"Helmet", "Footwear"},
-        "optional": set()
+        "optional": {"Gloves"}
     },
     "Level_2_High_Risk": {
         "description": "High Voltage Work / Electrical Maintenance",
-        "required": {"Helmet", "Footwear"},
+        "required": {"Helmet", "Footwear", "Gloves"},
         "optional": set()
     }
 }

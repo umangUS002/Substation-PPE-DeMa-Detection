@@ -150,8 +150,9 @@ export default function CameraGrid({ cameras, onOpenSpotlight, onRefresh }) {
                       )
                     ) : (
                       <>
-                        <span className="ppe-tag ok">Helmet ✓</span>
-                        <span className="ppe-tag ok">Boots ✓</span>
+                        {(cam.required_ppe || ['Helmet', 'Footwear', 'Gloves']).map(item => (
+                          <span key={item} className="ppe-tag ok">{item} ✓</span>
+                        ))}
                       </>
                     )}
                   </div>

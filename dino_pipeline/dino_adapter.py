@@ -19,9 +19,10 @@ class PPEClassifierHead(nn.Module):
         return self.classifier(x)
 
 class DINOAdapter:
-    def __init__(self, classifier_weights_path=None, conf_threshold=0.75, device=None):
+    def __init__(self, classifier_weights_path=None, person_threshold=0.40, ppe_threshold=0.60, device=None):
         self.device = device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
-        self.conf_threshold = conf_threshold
+        self.person_threshold = person_threshold
+        self.ppe_threshold = ppe_threshold
         
         print(f"[INFO] Initializing Two-Stage DINO Pipeline on {self.device}...")
         
@@ -89,7 +90,7 @@ class DINOAdapter:
             scores = pd_out['scores'].cpu().numpy()
             labels = pd_out['labels'].cpu().numpy()
             
-            mask = (labels == self.PERSON_CLASS_ID) & (scores > self.conf_threshold)
+            mask = (labels == self.PERSON_CLASS_ID) & (scores > self.person_threshold)
             person_boxes = boxes[mask]
             person_scores = scores[mask]
             
@@ -128,7 +129,7 @@ class DINOAdapter:
                 
                 for class_idx, ppe_name in enumerate(self.ppe_classes):
                     conf = float(prob_array[class_idx])
-                    if conf > self.conf_threshold:
+                    if conf > self.ppe_threshold:
                         results_per_frame[f_idx].append({
                             "label": ppe_name,
                             "confidence": conf,

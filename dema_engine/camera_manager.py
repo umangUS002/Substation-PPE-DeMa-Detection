@@ -17,7 +17,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from dema_engine.dema_algorithm import PPEDeMaEngine
 from dema_engine.ppe_rules import TARGET_CLASSES, HAZARD_LEVEL_REQUIREMENTS
-from models.yolo_adapter import YOLOv8Adapter
+from dino_pipeline.dino_adapter import DINOAdapter
 from database.db_logger import (
     init_db, seed_default_cameras,
     log_violation_event, increment_camera_scans, get_all_cameras
@@ -131,13 +131,12 @@ class SyntheticIndustrialFrameGenerator:
 
 
 class CameraChannel:
-    """Manages an individual camera feed, live capture, YOLO inference & frame rendering."""
+    """Manages an individual camera feed, live capture, and frame rendering."""
 
-    def __init__(self, camera_info: Dict[str, Any], dema_engine: PPEDeMaEngine, detector: Optional[YOLOv8Adapter] = None):
+    def __init__(self, camera_info: Dict[str, Any], dema_engine: PPEDeMaEngine):
         self.info = camera_info
         self.camera_id = camera_info["camera_id"]
         self.dema_engine = dema_engine
-        self.detector = detector
         self.tick = random.randint(0, 100)
         self.latest_jpeg: Optional[bytes] = None
         self.latest_raw_frame: Optional[np.ndarray] = None
@@ -164,8 +163,8 @@ class CameraChannel:
                 print(f"[WARN] Error opening source {self.rtsp_url}: {e}")
                 self.is_live = False
 
-    def process_step(self):
-        """Executes 1 frame capture/generation, YOLO inference, DeMa matching, snapshot saving, and rendering."""
+    def capture_step(self) -> Tuple[Optional[np.ndarray], List[Dict[str, Any]], int, bool]:
+        """Captures a frame (or generates a synthetic one) and returns it for processing."""
         self.tick += 1
         raw_dets = []
         worker_count = 1
@@ -175,21 +174,6 @@ class CameraChannel:
             ret, captured_frame = self.cap.read()
             if ret and captured_frame is not None:
                 frame = cv2.resize(captured_frame, (640, 360))
-                # Run real-time YOLO detection
-                if self.detector is not None:
-                    raw_dets = self.detector.predict_frame(frame)
-                    
-                    # Filter out classes we don't care about anymore (Vest, Mask, Gloves)
-                    filtered_dets = []
-                    for d in raw_dets:
-                        l = d.get("label", "").lower()
-                        if not ("vest" in l or "mask" in l or "glove" in l):
-                            filtered_dets.append(d)
-                    raw_dets = filtered_dets
-                
-                # Count detected workers/persons
-                person_count = sum(1 for d in raw_dets if d.get("label", "").lower() in ["person", "human", "worker"])
-                worker_count = max(person_count, 1 if len(raw_dets) > 0 else 0)
             else:
                 src = int(self.rtsp_url) if self.rtsp_url.isdigit() else self.rtsp_url
                 self.cap.open(src)
@@ -197,6 +181,18 @@ class CameraChannel:
         if frame is None:
             frame, raw_dets, meta = SyntheticIndustrialFrameGenerator.generate_frame(self.info, self.tick)
             worker_count = meta.get("total_detected_workers", 2)
+            
+        return frame, raw_dets, worker_count, self.is_live
+
+    def process_dema_and_render(self, frame: np.ndarray, raw_dets: List[Dict[str, Any]], worker_count: int):
+        """Executes DeMa matching, snapshot saving, and rendering with new combined tags."""
+        if frame is None:
+            return
+            
+        # Optional: For LIVE cameras, calculate worker_count from DINO Person boxes
+        if self.is_live:
+            person_count = sum(1 for d in raw_dets if d.get("label", "").lower() in ["person", "human", "worker"])
+            worker_count = max(person_count, 1 if len(raw_dets) > 0 else 0)
 
         # Run 3-Step DeMa Engine Pipeline
         dema_res = self.dema_engine.process_frame_pipeline(
@@ -208,36 +204,49 @@ class CameraChannel:
         color_bgr = dema_res["color_bgr"]
         alert_msg = dema_res["alert_message"]
 
-        # Draw Minimalist, Clean Visual Overlay
+        # Draw Minimalist, Clean Visual Overlay (With Tag Grouping for DINO)
         annotated = frame.copy()
-
-        # Render Bounding Boxes
         all_dets = matching_res.get("all_detections", matching_res.get("detected_ppe", []))
+
+        # Group detections by bounding box to combine tags (e.g. Person + Helmet)
+        box_groups = {}
         for det in all_dets:
-            raw_lbl = det.get("raw_label", det.get("normalized_label", ""))
-            norm_lbl = det.get("normalized_label", raw_lbl)
-            score = det.get("similarity_probability", 0.85)
             bbox = det.get("bbox", [0, 0, 0, 0])
-            xmin, ymin, xmax, ymax = [int(v) for v in bbox]
+            box_tuple = tuple(map(int, bbox))
+            if box_tuple not in box_groups:
+                box_groups[box_tuple] = []
+            box_groups[box_tuple].append(det)
 
-            if norm_lbl.lower() in ["person", "human"]:
-                box_color = (255, 191, 0)
-                tag = f"Worker ({score:.0%})"
-            elif norm_lbl.startswith("NO-") or "NO-" in raw_lbl:
-                box_color = (0, 0, 255)
-                tag = f"NO {norm_lbl.replace('NO-', '')} ({score:.0%})"
-            elif norm_lbl in TARGET_CLASSES or norm_lbl.lower() in ["hardhat", "helmet", "footwear", "boots"]:
-                box_color = (0, 255, 0)
-                tag = f"{raw_lbl} ({score:.0%})"
-            else:
-                box_color = (220, 220, 0)
-                tag = f"{raw_lbl} ({score:.0%})"
-
+        for box, dets in box_groups.items():
+            xmin, ymin, xmax, ymax = box
+            tag_parts = []
+            box_color = (255, 191, 0) # Default cyan/yellow for Person
+            
+            for det in dets:
+                raw_lbl = det.get("raw_label", det.get("normalized_label", ""))
+                norm_lbl = det.get("normalized_label", raw_lbl)
+                score = det.get("similarity_probability", 0.85)
+                
+                # Format tag text
+                if norm_lbl.lower() in ["person", "human"]:
+                    tag_parts.append(f"Worker ({score:.0%})")
+                elif norm_lbl.startswith("NO-") or "NO-" in raw_lbl:
+                    box_color = (0, 0, 255) # Red for missing
+                    tag_parts.append(f"NO {norm_lbl.replace('NO-', '')} ({score:.0%})")
+                else:
+                    tag_parts.append(f"{raw_lbl} ({score:.0%})")
+                    if box_color != (0, 0, 255): # Only upgrade color to green if not red
+                        if norm_lbl in TARGET_CLASSES or norm_lbl.lower() in ["hardhat", "helmet", "footwear", "boots", "gloves"]:
+                            box_color = (0, 255, 0)
+                            
+            tag_str = " | ".join(tag_parts)
+            
+            # Draw bounding box and combined tag
             cv2.rectangle(annotated, (xmin, ymin), (xmax, ymax), box_color, 2)
-            (w, h), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+            (w, h), _ = cv2.getTextSize(tag_str, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
             cv2.rectangle(annotated, (xmin, max(0, ymin - 20)), (xmin + w + 8, ymin), box_color, -1)
             text_color = (0, 0, 0) if box_color in [(0, 255, 0), (255, 191, 0), (220, 220, 0)] else (255, 255, 255)
-            cv2.putText(annotated, tag, (xmin + 3, max(12, ymin - 5)),
+            cv2.putText(annotated, tag_str, (xmin + 3, max(12, ymin - 5)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, text_color, 1)
 
         # Sleek Top Status Bar
@@ -343,16 +352,20 @@ class CameraChannel:
 
 
 class MultiCameraManager:
-    """Enterprise Manager for 20+ Industrial Plant Camera Channels with YOLOv8 inference."""
+    """Enterprise Manager for 20+ Industrial Plant Camera Channels with DINO batched inference."""
 
     def __init__(self):
         init_db()
         seed_default_cameras(DEFAULT_24_CAMERAS)
 
-        # Initialize YOLOv8 Trained Model
-        yolo_weights = "models/best.pt"
-        self.yolo_detector = YOLOv8Adapter(weights_path=yolo_weights, conf_threshold=0.25)
-        print(f"[OK] MultiCameraManager initialized with YOLOv8 detector '{yolo_weights}'")
+        # Initialize Batched DINO Adapter
+        classifier_weights = "models/dino_classifier.pt"
+        if os.path.exists(classifier_weights):
+            self.dino_adapter = DINOAdapter(classifier_weights_path=classifier_weights)
+            print(f"[OK] MultiCameraManager initialized with DINO pipeline '{classifier_weights}'")
+        else:
+            self.dino_adapter = DINOAdapter()
+            print("[WARN] DINO classifier weights not found. Using untrained adapter.")
 
         self.dema_engine = PPEDeMaEngine(default_level="Level_2_High_Risk", min_similarity_thresh=0.25)
         self.channels: Dict[str, CameraChannel] = {}
@@ -362,10 +375,10 @@ class MultiCameraManager:
         # Load all cameras from DB
         db_cams = get_all_cameras()
         for cam in db_cams:
-            self.channels[cam["camera_id"]] = CameraChannel(cam, self.dema_engine, self.yolo_detector)
+            self.channels[cam["camera_id"]] = CameraChannel(cam, self.dema_engine)
 
     def start(self):
-        """Starts multi-camera processing loop."""
+        """Starts multi-camera batched processing loop."""
         if self.is_running:
             return
         self.is_running = True
@@ -375,11 +388,35 @@ class MultiCameraManager:
 
     def _run_loop(self):
         while self.is_running:
+            live_batch_frames = []
+            live_active_channels = []
+            
+            # Step 1: Capture all frames and process synthetics instantly
             for ch in self.channels.values():
                 try:
-                    ch.process_step()
+                    frame, raw_dets, worker_count, is_live = ch.capture_step()
+                    if frame is None:
+                        continue
+                        
+                    if is_live:
+                        live_batch_frames.append(frame.copy())
+                        live_active_channels.append((ch, worker_count))
+                    else:
+                        ch.process_dema_and_render(frame, raw_dets, worker_count)
                 except Exception as e:
-                    print(f"[WARN] Camera {ch.camera_id} loop error: {e}")
+                    print(f"[WARN] Camera {ch.camera_id} capture error: {e}")
+                    
+            # Step 2: Mass Batched Inference for all Live cameras using DINO
+            if live_batch_frames:
+                try:
+                    batch_results = self.dino_adapter.predict_batch_frames(live_batch_frames)
+                    
+                    # Step 3: Dispatch results back to channels for rendering
+                    for idx, (ch, worker_count) in enumerate(live_active_channels):
+                        ch.process_dema_and_render(live_batch_frames[idx], batch_results[idx], worker_count)
+                except Exception as e:
+                    print(f"[WARN] Batched inference error: {e}")
+                    
             time.sleep(0.04) # ~25 FPS loop
 
     def stop(self):
@@ -403,7 +440,7 @@ class MultiCameraManager:
         cam_id = cam_data["camera_id"]
         if cam_id in self.channels:
             self.channels[cam_id].close()
-        ch = CameraChannel(cam_data, self.dema_engine, self.yolo_detector)
+        ch = CameraChannel(cam_data, self.dema_engine)
         self.channels[cam_id] = ch
         return cam_data
 
