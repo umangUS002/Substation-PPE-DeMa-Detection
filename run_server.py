@@ -12,7 +12,7 @@ if __name__ == "__main__":
     print("[SYSTEM] INDUSTRIAL SUBSTATION SAFETY & MULTI-CAMERA PPE MONITORING SYSTEM")
     print("=" * 75)
     print(" Active Channels : 24 Industrial Plant Cameras")
-    print(" Target PPE      : Helmet, Gloves, Footwear (+ Vest & Mask)")
+    print(" Target PPE      : Helmet, Footwear")
     print(" Engine Protocol  : 3-Step DeMa (Determination, Matching, Warning)")
     print(" Dashboard URL   : http://localhost:8000")
     print(" REST API Docs   : http://localhost:8000/docs")

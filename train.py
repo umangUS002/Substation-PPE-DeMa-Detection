@@ -4,7 +4,7 @@ Implements training configuration described in Section IV-B of paper:
 - Learning Rate: 0.0001
 - Batch Size: 4
 - Loss: MultiBox Loss (Classification + Localization)
-- Target Classes: Helmet, Gloves, Footwear
+- Target Classes: Helmet, Footwear
 """
 
 import argparse
@@ -21,7 +21,7 @@ def train_model(data_dir, epochs=10, batch_size=4, lr=0.0001, save_dir="models",
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Starting training on device: {device}", flush=True)
-    print(f"[INFO] Target Classes: Helmet, Gloves, Footwear", flush=True)
+    print(f"[INFO] Target Classes: Helmet, Footwear", flush=True)
     print(f"[INFO] Config: epochs={epochs}, batch_size={batch_size}, lr={lr}, resume={resume}\n", flush=True)
 
     # Load SSD-VGG16 Model
@@ -172,7 +172,7 @@ def plot_loss_curves(conf_losses, loc_losses, total_losses):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train SSD-VGG16 for Helmet, Gloves, and Footwear PPE Detection")
+    parser = argparse.ArgumentParser(description="Train SSD-VGG16 for Helmet and Footwear PPE Detection")
     parser.add_argument("--data-dir", type=str, default="data/sample_dataset", help="Path to dataset root folder")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")

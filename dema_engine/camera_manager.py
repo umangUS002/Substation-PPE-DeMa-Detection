@@ -113,16 +113,12 @@ class SyntheticIndustrialFrameGenerator:
             {"label": "Person", "confidence": 0.94, "bbox": [worker1_x, worker1_y, worker1_x + worker_w, worker1_y + worker_h]},
             {"label": "Person", "confidence": 0.91, "bbox": [worker2_x, worker2_y, worker2_x + w2_w, worker2_y + w2_h]},
             {"label": "Helmet", "confidence": 0.95, "bbox": [worker2_x + 15, worker2_y + 5, worker2_x + w2_w - 15, worker2_y + 35]},
-            {"label": "Gloves", "confidence": 0.88, "bbox": [worker2_x + 5, worker2_y + 90, worker2_x + 25, worker2_y + 120]},
-            {"label": "Footwear", "confidence": 0.89, "bbox": [worker2_x + 10, worker2_y + 130, worker2_x + w2_w - 10, worker2_y + 150]},
-            {"label": "Safety Vest", "confidence": 0.92, "bbox": [worker2_x + 10, worker2_y + 40, worker2_x + w2_w - 10, worker2_y + 100]}
+            {"label": "Footwear", "confidence": 0.89, "bbox": [worker2_x + 10, worker2_y + 130, worker2_x + w2_w - 10, worker2_y + 150]}
         ]
 
         if not is_violation_cycle:
             raw_detections.append({"label": "Helmet", "confidence": 0.96, "bbox": [worker1_x + 20, worker1_y + 5, worker1_x + worker_w - 20, worker1_y + 45]})
-            raw_detections.append({"label": "Gloves", "confidence": 0.91, "bbox": [worker1_x + 5, worker1_y + 100, worker1_x + 30, worker1_y + 130]})
             raw_detections.append({"label": "Footwear", "confidence": 0.93, "bbox": [worker1_x + 15, worker1_y + 150, worker1_x + worker_w - 15, worker1_y + 170]})
-            raw_detections.append({"label": "Safety Vest", "confidence": 0.94, "bbox": [worker1_x + 15, worker1_y + 48, worker1_x + worker_w - 15, worker1_y + 120]})
         else:
             raw_detections.append({"label": "NO-Hardhat", "confidence": 0.92, "bbox": [worker1_x + 20, worker1_y + 5, worker1_x + worker_w - 20, worker1_y + 45]})
             raw_detections.append({"label": "Footwear", "confidence": 0.90, "bbox": [worker1_x + 15, worker1_y + 150, worker1_x + worker_w - 15, worker1_y + 170]})
@@ -182,6 +178,14 @@ class CameraChannel:
                 # Run real-time YOLO detection
                 if self.detector is not None:
                     raw_dets = self.detector.predict_frame(frame)
+                    
+                    # Filter out classes we don't care about anymore (Vest, Mask, Gloves)
+                    filtered_dets = []
+                    for d in raw_dets:
+                        l = d.get("label", "").lower()
+                        if not ("vest" in l or "mask" in l or "glove" in l):
+                            filtered_dets.append(d)
+                    raw_dets = filtered_dets
                 
                 # Count detected workers/persons
                 person_count = sum(1 for d in raw_dets if d.get("label", "").lower() in ["person", "human", "worker"])
@@ -222,7 +226,7 @@ class CameraChannel:
             elif norm_lbl.startswith("NO-") or "NO-" in raw_lbl:
                 box_color = (0, 0, 255)
                 tag = f"NO {norm_lbl.replace('NO-', '')} ({score:.0%})"
-            elif norm_lbl in TARGET_CLASSES or norm_lbl.lower() in ["hardhat", "helmet", "safety vest", "mask", "gloves", "footwear", "boots"]:
+            elif norm_lbl in TARGET_CLASSES or norm_lbl.lower() in ["hardhat", "helmet", "footwear", "boots"]:
                 box_color = (0, 255, 0)
                 tag = f"{raw_lbl} ({score:.0%})"
             else:
@@ -322,7 +326,7 @@ class CameraChannel:
                     "is_compliant": True,
                     "missing_ppe": [],
                     "suppressed_occlusions": [],
-                    "required_ppe": ["Helmet", "Gloves", "Footwear"],
+                    "required_ppe": ["Helmet", "Footwear"],
                     "explicit_violations": [],
                     "alert_message": "[SAFE] Initializing stream...",
                     "total_detected_workers": 1,

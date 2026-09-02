@@ -1,7 +1,7 @@
 """
 Dataset Loader for Substation PPE Detection.
 Supports PASCAL VOC XML format annotations and PyTorch DataLoader integration.
-Focused on Helmet, Gloves, and Footwear categories.
+Focused on Helmet and Footwear categories.
 """
 
 import os
@@ -14,8 +14,7 @@ from .augmentation import FewShotAugmenter
 LABEL_TO_ID = {
     "background": 0,
     "Helmet": 1,
-    "Gloves": 2,
-    "Footwear": 3
+    "Footwear": 2
 }
 
 ID_TO_LABEL = {v: k for k, v in LABEL_TO_ID.items()}
@@ -71,9 +70,9 @@ class PPEDataset(Dataset):
             return boxes, labels
 
         if class_mapping is None:
-            # Dataset mapping for target classes: Helmet (1), Gloves (2), Footwear (3)
-            # Class 3 = Helmet/Hardhat, Class 1 = Gloves, Class 0 = Footwear/Boots
-            class_mapping = {3: 1, 1: 2, 0: 3}
+            # Dataset mapping for target classes: Helmet (1), Footwear (2)
+            # Class 3 = Helmet/Hardhat, Class 0 = Footwear/Boots
+            class_mapping = {3: 1, 0: 2}
 
         with open(txt_path, 'r') as f:
             for line in f:

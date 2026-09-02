@@ -4,7 +4,7 @@ Supports both YOLO trained models and SSD-VGG16 models.
 """
 
 # Target PPE Classes
-TARGET_CLASSES = ["Helmet", "Gloves", "Footwear", "Safety Vest", "Mask"]
+TARGET_CLASSES = ["Helmet", "Footwear"]
 
 # Mapping of class aliases and non-compliance aliases to standard names
 CLASS_ALIASES = {
@@ -13,9 +13,6 @@ CLASS_ALIASES = {
     "hat": "Helmet",
     "no-hardhat": "NO-Helmet",
     "no-helmet": "NO-Helmet",
-    "gloves": "Gloves",
-    "glove": "Gloves",
-    "no-gloves": "NO-Gloves",
     "footwear": "Footwear",
     "boots": "Footwear",
     "shoes": "Footwear",
@@ -23,12 +20,6 @@ CLASS_ALIASES = {
     "leather boots": "Footwear",
     "no-footwear": "NO-Footwear",
     "no-boots": "NO-Footwear",
-    "safety vest": "Safety Vest",
-    "vest": "Safety Vest",
-    "no-safety vest": "NO-Safety Vest",
-    "no-vest": "NO-Safety Vest",
-    "mask": "Mask",
-    "no-mask": "NO-Mask",
     "person": "Person",
     "human": "Person",
     "worker": "Person",
@@ -42,12 +33,12 @@ HAZARD_LEVEL_REQUIREMENTS = {
     "Level_1_Standard": {
         "description": "Standard Substation Inspection",
         "required": {"Helmet", "Footwear"},
-        "optional": {"Gloves", "Safety Vest", "Mask"}
+        "optional": set()
     },
     "Level_2_High_Risk": {
         "description": "High Voltage Work / Electrical Maintenance",
-        "required": {"Helmet", "Gloves", "Footwear"},
-        "optional": {"Safety Vest", "Mask"}
+        "required": {"Helmet", "Footwear"},
+        "optional": set()
     }
 }
 

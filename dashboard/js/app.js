@@ -110,7 +110,7 @@ function openSpotlight(camId) {
     document.getElementById("modal-cam-id").textContent = cam.camera_id;
     document.getElementById("modal-cam-name").textContent = cam.name;
     document.getElementById("modal-zone").textContent = cam.zone;
-    document.getElementById("modal-hazard").textContent = cam.hazard_level + " (Helmet, Gloves, Footwear)";
+    document.getElementById("modal-hazard").textContent = cam.hazard_level + " (Helmet, Footwear)";
     if (document.getElementById("modal-worker-id")) {
         document.getElementById("modal-worker-id").textContent = `${cam.total_detected_workers || 1} Worker(s) Active`;
     }
@@ -256,7 +256,7 @@ function renderCameraGrid() {
                     <div class="ppe-tags-list">
                         ${isViolation ? 
                             missingList.map(item => `<span class="ppe-tag missing">❌ NO ${item}</span>`).join('') :
-                            `<span class="ppe-tag ok">🪖 Hardhat</span><span class="ppe-tag ok">🦺 Vest</span><span class="ppe-tag ok">🧤 Gloves</span><span class="ppe-tag ok">🥾 Footwear</span>`
+                            `<span class="ppe-tag ok">🪖 Hardhat</span><span class="ppe-tag ok">🥾 Footwear</span>`
                         }
                     </div>
                 </div>
@@ -363,11 +363,11 @@ function initCharts() {
     ppeChart = new Chart(ctxPpe, {
         type: 'bar',
         data: {
-            labels: ["Helmet", "Gloves", "Footwear"],
+            labels: ["Helmet", "Footwear"],
             datasets: [{
                 label: 'Missing PPE Incident Count',
-                data: [4, 12, 3],
-                backgroundColor: ['#ff1744', '#ffab00', '#00d2ff'],
+                data: [4, 3],
+                backgroundColor: ['#ff1744', '#00d2ff'],
                 borderRadius: 6
             }]
         },
@@ -387,7 +387,6 @@ function updateCharts() {
     if (ppeChart) {
         const counts = [
             analyticsData.missing_ppe_breakdown.Helmet || 0,
-            analyticsData.missing_ppe_breakdown.Gloves || 0,
             analyticsData.missing_ppe_breakdown.Footwear || 0
         ];
         ppeChart.data.datasets[0].data = counts;

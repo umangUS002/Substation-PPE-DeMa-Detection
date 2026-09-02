@@ -48,7 +48,7 @@ export default function AnalyticsDashboard({ analytics }) {
   const hourLabels = analytics?.hourly_labels || ['00','02','04','06','08','10','12','14','16','18','20','22'].map(h => `${h}:00`);
   const hourData   = analytics?.hourly_compliance || [94, 96, 98, 97, 99, 96, 93, 96, 98, 98, 99, compliance];
 
-  const ppeBd = analytics?.missing_ppe_breakdown || { Helmet: 4, Gloves: 12, Footwear: 3 };
+  const ppeBd = analytics?.missing_ppe_breakdown || { Helmet: 4, Footwear: 3 };
 
   const lineData = {
     labels: hourLabels,
@@ -66,11 +66,11 @@ export default function AnalyticsDashboard({ analytics }) {
   };
 
   const barData = {
-    labels: ['Helmet', 'Gloves', 'Footwear'],
+    labels: ['Helmet', 'Footwear'],
     datasets: [{
       label: 'Incidents',
-      data: [ppeBd.Helmet || 0, ppeBd.Gloves || 0, ppeBd.Footwear || 0],
-      backgroundColor: ['rgba(244,63,94,0.7)', 'rgba(245,158,11,0.7)', 'rgba(34,211,238,0.7)'],
+      data: [ppeBd.Helmet || 0, ppeBd.Footwear || 0],
+      backgroundColor: ['rgba(244,63,94,0.7)', 'rgba(34,211,238,0.7)'],
       borderRadius: 5,
       borderSkipped: false,
     }],

@@ -1,7 +1,7 @@
 """
 Real-time PPE Detection and DeMa Safety Compliance Monitoring Script.
 Supports image, video, webcam, or RTSP feeds.
-Target PPE: Helmet, Gloves, Footwear
+Target PPE: Helmet, Footwear
 """
 
 import argparse
@@ -26,7 +26,7 @@ def draw_detection_overlay(frame: np.ndarray, dema_result: dict) -> np.ndarray:
     color_bgr = dema_result["color_bgr"]
     alert_msg = dema_result["alert_message"]
 
-    # Draw Bounding Boxes for All Detections (Person, Helmet, Gloves, Footwear, Mask, Safety Vest, etc.)
+    # Draw Bounding Boxes for All Detections (Person, Helmet, Footwear, etc.)
     all_dets = matching_result.get("all_detections", matching_result.get("detected_ppe", []))
 
     for det in all_dets:
@@ -44,7 +44,7 @@ def draw_detection_overlay(frame: np.ndarray, dema_result: dict) -> np.ndarray:
         elif norm_label.startswith("NO-"):
             box_color = (0, 0, 255) # Bright Red for violations
             tag = f"WARNING: {raw_label} ({prob:.0%})"
-        elif norm_label in TARGET_CLASSES or norm_label.lower() in ["hardhat", "helmet", "safety vest", "mask", "gloves", "footwear", "boots"]:
+        elif norm_label in TARGET_CLASSES or norm_label.lower() in ["hardhat", "helmet", "footwear", "boots"]:
             box_color = (0, 255, 0) # Green for detected PPE
             tag = f"{raw_label} ({prob:.0%})"
         else:
@@ -80,7 +80,7 @@ def run_detection_stream(
 ):
     model_name = "PyTorch SSD-VGG16 (Paper Model)" if model_type.lower() == "ssd" else "YOLOv8 Adapter"
     print(f"[INFO] Initializing PPE DeMa Detection System using {model_name}...")
-    print(f"[INFO] Target Categories: Helmet, Gloves, Footwear")
+    print(f"[INFO] Target Categories: Helmet, Footwear")
     print(f"[INFO] Hazard Level: {hazard_level}")
 
     dema_engine = PPEDeMaEngine(default_level=hazard_level, min_similarity_thresh=conf_thresh)
@@ -117,6 +117,14 @@ def run_detection_stream(
 
             # Step 1: Detect objects using paper's SSD-VGG16 detector
             raw_detections = detector.predict_frame(frame)
+            
+            # Filter out classes we don't care about anymore (Vest, Mask, Gloves)
+            filtered_dets = []
+            for d in raw_detections:
+                l = d.get("label", "").lower()
+                if not ("vest" in l or "mask" in l or "glove" in l):
+                    filtered_dets.append(d)
+            raw_detections = filtered_dets
 
             # Step 2 & 3: Run DeMa Algorithm
             dema_res = dema_engine.process_frame_pipeline(raw_detections, hazard_level=hazard_level)

@@ -29,7 +29,7 @@ def evaluate_models():
         adapter = SSDVGG16Adapter(weights_path=path, conf_threshold=0.20)
         
         total_detections = 0
-        class_counts = {"Helmet": 0, "Gloves": 0, "Footwear": 0}
+        class_counts = {"Helmet": 0, "Footwear": 0}
         
         for idx, img_p in enumerate(sample_images):
             frame = cv2.imread(img_p)

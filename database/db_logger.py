@@ -185,7 +185,7 @@ def get_all_cameras() -> List[Dict[str, Any]]:
     return cameras
 
 
-def get_recent_violations(limit: int = 50, camera_id: Optional[str] = None, zone: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_recent_violations(limit: int = 50, camera_id: Optional[str] = None, zone: Optional[str] = None, status: Optional[str] = None, date_str: Optional[str] = None) -> List[Dict[str, Any]]:
     """Retrieves recent PPE violation logs with optional filtering."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -202,6 +202,9 @@ def get_recent_violations(limit: int = 50, camera_id: Optional[str] = None, zone
     if status:
         query += " AND status = ?"
         params.append(status)
+    if date_str:
+        query += " AND datetime_str LIKE ?"
+        params.append(date_str + '%')
 
     query += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
@@ -283,7 +286,7 @@ def get_plant_analytics() -> Dict[str, Any]:
     # Most common missing PPE items
     cursor.execute("SELECT missing_ppe FROM violations ORDER BY id DESC LIMIT 100")
     recent_violations_rows = cursor.fetchall()
-    ppe_counts = {"Helmet": 0, "Gloves": 0, "Footwear": 0, "Safety Vest": 0, "Mask": 0}
+    ppe_counts = {"Helmet": 0, "Footwear": 0}
     for r in recent_violations_rows:
         try:
             m_list = json.loads(r["missing_ppe"])
@@ -306,9 +309,9 @@ def get_plant_analytics() -> Dict[str, Any]:
     }
 
 
-def export_violations_csv() -> str:
+def export_violations_csv(camera_id: Optional[str] = None, date_str: Optional[str] = None) -> str:
     """Exports all violation records to CSV format."""
-    violations = get_recent_violations(limit=1000)
+    violations = get_recent_violations(limit=10000, camera_id=camera_id, date_str=date_str)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([

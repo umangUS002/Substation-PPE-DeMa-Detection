@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { X, Users, RefreshCw, Clock, AlertTriangle, CheckCircle2, ZoomIn } from 'lucide-react';
+import { X, Users, RefreshCw, Clock, AlertTriangle, CheckCircle2, ZoomIn, Download } from 'lucide-react';
 
 // Call backend directly to bypass Vite proxy ECONNABORTED errors from MJPEG streams
 const API = 'http://localhost:8000';
@@ -134,7 +134,7 @@ export default function SpotlightModal({ camera, onClose }) {
             {[
               ['Zone', camera.zone],
               ['Hazard Level', (camera.hazard_level || '').replace(/_/g, ' ')],
-              ['Mandatory PPE', (camera.required_ppe || ['Helmet', 'Gloves', 'Footwear']).join(', ')],
+              ['Mandatory PPE', (camera.required_ppe || ['Helmet', 'Footwear']).join(', ')],
               ['Workers Detected', workerCount],
               ['Alert Consensus', camera.temporal_consensus || '—'],
             ].map(([label, val]) => (
@@ -172,15 +172,26 @@ export default function SpotlightModal({ camera, onClose }) {
                 {loading ? 'Loading...' : `${violations.length} events`}
               </span>
             </div>
-            <button
-              className="btn-primary"
-              style={{ fontSize: 11, padding: '4px 12px' }}
-              onClick={fetchViolations}
-              disabled={loading}
-            >
-              <RefreshCw size={11} className={loading ? 'spin' : ''} style={{ marginRight: 5, display: 'inline' }} />
-              Refresh
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <a
+                href={`${API}/api/export/csv?camera_id=${camera.camera_id}&date=today`}
+                download
+                className="btn-primary"
+                style={{ fontSize: 11, padding: '4px 12px', textDecoration: 'none', display: 'flex', alignItems: 'center' }}
+              >
+                <Download size={11} style={{ marginRight: 5 }} />
+                Export Today's Logs (CSV)
+              </a>
+              <button
+                className="btn-primary"
+                style={{ fontSize: 11, padding: '4px 12px' }}
+                onClick={fetchViolations}
+                disabled={loading}
+              >
+                <RefreshCw size={11} className={loading ? 'spin' : ''} style={{ marginRight: 5, display: 'inline' }} />
+                Refresh
+              </button>
+            </div>
           </div>
 
           {/* Loading bar */}

@@ -12,8 +12,7 @@ import torchvision
 from torchvision.models.detection import ssd300_vgg16, SSD300_VGG16_Weights
 from torchvision.models.detection.ssd import SSDClassificationHead
 
-# Target PPE Categories + Background
-TARGET_CLASSES_SSD = ["__background__", "Helmet", "Gloves", "Footwear"]
+TARGET_CLASSES_SSD = ["__background__", "Helmet", "Footwear"]
 
 def build_ssd_vgg16_model(num_classes: int = len(TARGET_CLASSES_SSD), pretrained: bool = True):
     """
@@ -97,7 +96,7 @@ class SSDVGG16Adapter:
                 else:
                     self.model = build_ssd_vgg16_model(num_classes=len(TARGET_CLASSES_SSD), pretrained=False)
                     self.model.load_state_dict(checkpoint)
-                    self.id_to_label = {1: "Helmet", 2: "Gloves", 3: "Footwear"}
+                    self.id_to_label = {1: "Helmet", 2: "Footwear"}
                     print(f"[OK] Loaded Custom Paper Model: PyTorch SSD300-VGG16 from '{weights_path}'")
             else:
                 self.model = ssd300_vgg16(weights=SSD300_VGG16_Weights.DEFAULT)

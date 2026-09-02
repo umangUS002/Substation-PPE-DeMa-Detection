@@ -1,7 +1,7 @@
 """
 Self-contained Verification Demo Script.
 Demonstrates the 3-step PPE DeMa Algorithm (Determination, Matching, System Warning)
-for Helmet, Gloves, and Footwear safety compliance.
+for Helmet and Footwear safety compliance.
 """
 
 import os
@@ -25,29 +25,26 @@ def create_synthetic_worker_image(detected_items: list, title: str) -> np.ndarra
 def run_verification_demo():
     print("=" * 60)
     print("  Substation Safety PPE Detection & DeMa Algorithm Demo")
-    print("  Focusing on: Helmet, Gloves, Footwear")
+    print("  Focusing on: Helmet, Footwear")
     print("=" * 60 + "\n")
 
     os.makedirs("output", exist_ok=True)
     dema_engine = PPEDeMaEngine(default_level="Level_2_High_Risk", min_similarity_thresh=0.50)
 
-    # Test Case 1: Fully Compliant Worker (Has Helmet, Gloves, Footwear)
+    # Test Case 1: Fully Compliant Worker (Has Helmet, Footwear)
     raw_detections_compliant = [
-        {"label": "Helmet", "confidence": 0.98, "bbox": [350, 130, 450, 190]},
-        {"label": "Gloves", "confidence": 0.89, "bbox": [230, 330, 290, 400]},
-        {"label": "Gloves", "confidence": 0.91, "bbox": [510, 330, 570, 400]},
-        {"label": "Footwear", "confidence": 0.94, "bbox": [320, 500, 480, 550]}
+        {"label": "Footwear", "confidence": 0.94, "bbox": [235, 600, 295, 650]},
+        {"label": "Footwear", "confidence": 0.96, "bbox": [515, 600, 575, 650]},
     ]
 
-    # Test Case 2: Non-Compliant Worker (Missing Gloves & Footwear)
+    # Test Case 2: Non-Compliant Worker (Missing Footwear)
     raw_detections_violating = [
-        {"label": "Helmet", "confidence": 0.96, "bbox": [350, 130, 450, 190]},
-        {"label": "NO-Gloves", "confidence": 0.85, "bbox": [230, 330, 290, 400]}
+        {"label": "Helmet", "confidence": 0.96, "bbox": [350, 130, 450, 190]}
     ]
 
     scenarios = [
         ("Scenario 1: Fully Compliant Worker", raw_detections_compliant, "compliant_worker_output.jpg"),
-        ("Scenario 2: Non-Compliant Worker (Missing Gloves & Footwear)", raw_detections_violating, "non_compliant_worker_output.jpg")
+        ("Scenario 2: Non-Compliant Worker (Missing Footwear)", raw_detections_violating, "non_compliant_worker_output.jpg")
     ]
 
     for title, detections, filename in scenarios:

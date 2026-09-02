@@ -151,7 +151,6 @@ export default function CameraGrid({ cameras, onOpenSpotlight, onRefresh }) {
                     ) : (
                       <>
                         <span className="ppe-tag ok">Helmet ✓</span>
-                        <span className="ppe-tag ok">Gloves ✓</span>
                         <span className="ppe-tag ok">Boots ✓</span>
                       </>
                     )}

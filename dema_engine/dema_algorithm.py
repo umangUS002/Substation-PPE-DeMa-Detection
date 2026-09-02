@@ -67,12 +67,12 @@ class PPEDeMaEngine:
 
     def detect_limb_occlusion(self, processed_detections: List[Dict[str, Any]]) -> Dict[str, bool]:
         """
-        Detects if hands (gloves) or feet (boots) are occluded by other workers or out-of-frame.
+        Detects if feet (boots) are occluded by other workers or out-of-frame.
         """
         persons = [d for d in processed_detections if d["normalized_label"].lower() in ["person", "human", "worker"]]
-        occlusion_map = {"Footwear": False, "Gloves": False, "Helmet": False, "Safety Vest": False, "Mask": False}
+        occlusion_map = {"Footwear": False, "Helmet": False}
 
-        # If a single person is in upper-body view (webcam close-up / desk), suppress feet/gloves
+        # If a single person is in upper-body view (webcam close-up / desk), suppress feet
         if len(persons) >= 1:
             for p in persons:
                 box = p["bbox"]
@@ -80,7 +80,6 @@ class PPEDeMaEngine:
                 # If person box occupies most of the frame height from top but bottom is cut off
                 if box[3] >= 340 and box[1] < 100:
                     occlusion_map["Footwear"] = True
-                    occlusion_map["Gloves"] = True
 
         if len(persons) >= 2:
             for i in range(len(persons)):
@@ -90,7 +89,6 @@ class PPEDeMaEngine:
                     iou = compute_iou(p1_box, p2_box)
                     if iou > 0.20:
                         occlusion_map["Footwear"] = True
-                        occlusion_map["Gloves"] = True
 
         return occlusion_map
 

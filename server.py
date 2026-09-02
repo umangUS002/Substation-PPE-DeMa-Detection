@@ -201,13 +201,22 @@ async def get_analytics_route():
 
 
 @app.get("/api/export/csv")
-async def export_csv_route():
+async def export_csv_route(camera_id: Optional[str] = None, date: Optional[str] = None):
     """Exports violation logs as a CSV file."""
-    csv_data = export_violations_csv()
+    if date == "today":
+        date = time.strftime("%Y-%m-%d")
+    csv_data = export_violations_csv(camera_id=camera_id, date_str=date)
+    
+    filename = "industrial_ppe_audit_log.csv"
+    if camera_id:
+        filename = f"industrial_ppe_{camera_id}_log.csv"
+    if date:
+        filename = filename.replace(".csv", f"_{date}.csv")
+        
     return Response(
         content=csv_data,
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=industrial_ppe_audit_log.csv"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
 

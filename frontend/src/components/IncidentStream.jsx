@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, CheckCircle2, X, AlertTriangle, Clock } from 'lucide-react';
+import { RefreshCw, CheckCircle2, X, AlertTriangle, Clock, Download } from 'lucide-react';
 
 const API = 'http://localhost:8000';
 
@@ -101,8 +101,18 @@ export default function IncidentStream({ onIncidentResolved }) {
             <option value="RESOLVED">Resolved</option>
           </select>
 
+          <a
+            href={`${API}/api/export/csv?date=today`}
+            download
+            className="btn-primary"
+            style={{ textDecoration: 'none', display: 'flex', alignItems: 'center' }}
+          >
+            <Download size={13} style={{ marginRight: 5 }} />
+            Export Today's Logs (CSV)
+          </a>
+
           <button className="btn-primary" onClick={fetchIncidents} disabled={loading}>
-            <RefreshCw size={13} className={loading ? 'spin' : ''} />
+            <RefreshCw size={13} className={loading ? 'spin' : ''} style={{ marginRight: 5 }} />
             {loading ? 'Loading…' : 'Refresh'}
           </button>
         </div>
