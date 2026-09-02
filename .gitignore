@@ -52,3 +52,4 @@ models/*.weights
 # Training / evaluation output graphs & figures (optional if you don't want them in git)
 results/*.png
 results/*.jpg
+*.zip
