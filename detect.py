@@ -72,20 +72,29 @@ def draw_detection_overlay(frame: np.ndarray, dema_result: dict) -> np.ndarray:
 def run_detection_stream(
     source: str, 
     weights_path: str = None, 
-    conf_thresh: float = 0.25,
+    conf_thresh: float = 0.20,
     hazard_level: str = "Level_2_High_Risk",
     model_type: str = "ssd",
     save_output: bool = True,
     show_window: bool = True
 ):
-    model_name = "PyTorch SSD-VGG16 (Paper Model)" if model_type.lower() == "ssd" else "YOLOv8 Adapter"
+    model_names = {"ssd": "PyTorch SSD-VGG16 (Paper Model)", "yolo": "YOLOv8 Adapter", "dino": "DINO Two-Stage Pipeline"}
+    model_name = model_names.get(model_type.lower(), model_type)
     print(f"[INFO] Initializing PPE DeMa Detection System using {model_name}...")
     print(f"[INFO] Target Categories: Helmet, Footwear")
     print(f"[INFO] Hazard Level: {hazard_level}")
 
     dema_engine = PPEDeMaEngine(default_level=hazard_level, min_similarity_thresh=conf_thresh)
     
-    if model_type.lower() == "yolo":
+    if model_type.lower() == "dino":
+        from dino_pipeline.dino_adapter import DINOAdapter
+        classifier_path = "models/dino_classifier.pt" if os.path.exists("models/dino_classifier.pt") else None
+        detector = DINOAdapter(
+            classifier_weights_path=classifier_path,
+            person_threshold=max(0.30, conf_thresh),
+            ppe_threshold=conf_thresh
+        )
+    elif model_type.lower() == "yolo":
         yolo_w = weights_path if (weights_path and not weights_path.endswith("best_ssd_vgg16.pt")) else "models/best.pt"
         detector = YOLOv8Adapter(weights_path=yolo_w, conf_threshold=conf_thresh)
     else:
@@ -152,8 +161,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Substation Safety PPE Detection")
     parser.add_argument("--source", type=str, default="0", help="Video source (0 for webcam, file.mp4, or RTSP url)")
     parser.add_argument("--weights", type=str, default=None, help="Model weights path (defaults based on --model-type)")
-    parser.add_argument("--model-type", type=str, default="ssd", choices=["ssd", "yolo"], help="Model architecture: 'ssd' (Paper Model) or 'yolo'")
-    parser.add_argument("--conf", type=float, default=0.25, help="Similarity threshold")
+    parser.add_argument("--model-type", type=str, default="ssd", choices=["ssd", "yolo", "dino"], help="Model: 'ssd' (Paper), 'yolo' (fast), 'dino' (best accuracy)")
+    parser.add_argument("--conf", type=float, default=0.20, help="Similarity threshold (lower for video, default 0.20)")
     parser.add_argument("--level", type=str, default="Level_2_High_Risk", help="Hazard Level (Level_1_Standard, Level_2_High_Risk)")
     parser.add_argument("--save", action="store_true", help="Save output video")
     parser.add_argument("--show", action="store_true", default=True, help="Show GUI display window")

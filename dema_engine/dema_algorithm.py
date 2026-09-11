@@ -39,11 +39,13 @@ class PPEDeMaEngine:
         self, 
         default_level: str = "Level_2_High_Risk", 
         min_similarity_thresh: float = 0.25,
-        temporal_window: int = 4
+        temporal_window: int = 25,
+        violation_ratio: float = 0.40
     ):
         self.default_level = default_level
         self.min_similarity_thresh = min_similarity_thresh
         self.temporal_window = temporal_window
+        self.violation_ratio = violation_ratio  # Fraction of window that must show violation
         self.history_buffer = []
         self.violation_history = []
 
@@ -135,7 +137,13 @@ class PPEDeMaEngine:
             else:
                 true_missing.append(item)
 
-        is_compliant = len(true_missing) == 0
+        persons_detected = any(d["normalized_label"].lower() in ["person", "human", "worker"] for d in processed_detections)
+
+        if not persons_detected:
+            true_missing = []
+            is_compliant = True
+        else:
+            is_compliant = len(true_missing) == 0
 
         return {
             "timestamp": time.time(),
@@ -148,7 +156,8 @@ class PPEDeMaEngine:
             "missing_ppe": sorted(list(set(true_missing))),
             "suppressed_occlusions": sorted(list(set(suppressed_occlusions))),
             "explicit_violations": sorted(list(explicit_violations)),
-            "is_compliant": is_compliant
+            "is_compliant": is_compliant,
+            "persons_detected": persons_detected
         }
 
     def step3_system_warning(self, matching_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -159,16 +168,26 @@ class PPEDeMaEngine:
         level = matching_result["hazard_level"]
 
         # Temporal Sliding Window Consensus Filter
+        # Requires violation_ratio (default 40%) of the sliding window to show 
+        # non-compliance before confirming — prevents flickering on video/CCTV.
         self.history_buffer.append(is_compliant)
         if len(self.history_buffer) > self.temporal_window:
             self.history_buffer.pop(0)
 
         non_compliant_count = sum(1 for status in self.history_buffer if not status)
-        confirmed_violation = non_compliant_count >= 1 if not is_compliant else (non_compliant_count >= 2)
+        window_size = len(self.history_buffer)
+        violation_fraction = non_compliant_count / max(window_size, 1)
+        # Confirm violation only if enough of the recent window agrees
+        min_required = max(2, int(window_size * self.violation_ratio))
+        confirmed_violation = non_compliant_count >= min_required
+
+        persons_detected = matching_result.get("persons_detected", True)
 
         if not confirmed_violation and is_compliant:
             status_code = "COMPLIANT"
-            if occluded:
+            if not persons_detected:
+                alert_message = "[SAFE] No personnel detected"
+            elif occluded:
                 alert_message = f"[SAFE] PPE compliant (Suppressed {', '.join(occluded)})"
             else:
                 alert_message = f"[SAFE] All required PPE worn"
