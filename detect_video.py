@@ -186,9 +186,19 @@ class TemporalDetectionSmoother:
                             confirmation_count += 1
                             break  # One match per frame is enough
             
-            # Confirmed if seen in enough recent frames, OR if it's high-confidence
-            if confirmation_count >= self.min_confirmations or det["confidence"] > 0.65:
-                confirmed.append(det)
+            # Confirmed if seen in enough recent frames.
+            # PPE labels (Helmet/Gloves/Footwear) ALWAYS need temporal confirmation
+            # to prevent single-frame flickering. Only Person boxes (which are already
+            # stabilised by the tracker) can bypass with high confidence alone.
+            is_ppe_label = det["label"] in ("Helmet", "Gloves", "Footwear")
+            if is_ppe_label:
+                # Strict: PPE labels must be confirmed across multiple frames, no shortcuts
+                if confirmation_count >= self.min_confirmations:
+                    confirmed.append(det)
+            else:
+                # Person/other labels: original logic with high-confidence bypass
+                if confirmation_count >= self.min_confirmations or det["confidence"] > 0.65:
+                    confirmed.append(det)
         
         # If no detections at all this frame but we had recent ones, carry forward briefly
         if len(confirmed) == 0 and len(self.last_confirmed_detections) > 0:
@@ -303,10 +313,12 @@ def draw_video_overlay(frame: np.ndarray, dema_result: dict, fps: float = 0.0, f
 
 # ─── Load Model ─────────────────────────────────────────────────────────────────
 
-def load_detector(model_type: str, weights_path: str = None, conf_thresh: float = 0.20):
+def load_detector(model_type: str, weights_path: str = None, conf_thresh: float = 0.20, enable_tiling: bool = True):
     """
     Loads the appropriate model backend.
     """
+    grid = (2, 2) if enable_tiling else (1, 1)
+
     if model_type == "dino":
         from dino_pipeline.dino_adapter import DINOAdapter
         classifier_path = "models/dino_classifier.pt" if os.path.exists("models/dino_classifier.pt") else None
@@ -314,7 +326,7 @@ def load_detector(model_type: str, weights_path: str = None, conf_thresh: float 
             classifier_weights_path=classifier_path,
             person_threshold=max(0.30, conf_thresh),
             ppe_threshold=conf_thresh,
-            tile_grid=(1, 1)  # Disabled tiling for close-up videos!
+            tile_grid=grid
         )
         print(f"[OK] Loaded DINO Two-Stage Pipeline (best for CCTV)")
         return detector
@@ -329,7 +341,9 @@ def load_detector(model_type: str, weights_path: str = None, conf_thresh: float 
             classifier_path = "models/dino_classifier_distilled.pt" if os.path.exists("models/dino_classifier_distilled.pt") else None
             detector = DINOAdapterOptimized(
                 classifier_weights_path=classifier_path,
-                tile_grid=(1, 1),
+                person_threshold=max(0.50, conf_thresh),
+                ppe_threshold=conf_thresh,
+                tile_grid=grid,
                 backbone_mode="distilled",
                 student_weights_path=student_weights
             )
@@ -337,12 +351,19 @@ def load_detector(model_type: str, weights_path: str = None, conf_thresh: float 
         else:
             # Fallback: use real DINOv2 backbone + original classifier
             classifier_path = "models/dino_classifier.pt" if os.path.exists("models/dino_classifier.pt") else None
+            finetuned_dino_path = "models/dino_backbone_finetuned.pt" if os.path.exists("models/dino_backbone_finetuned.pt") else None
             detector = DINOAdapterOptimized(
                 classifier_weights_path=classifier_path,
-                tile_grid=(1, 1),
-                backbone_mode="dino"
+                person_threshold=max(0.50, conf_thresh),
+                ppe_threshold=conf_thresh,
+                tile_grid=grid,
+                backbone_mode="dino",
+                dino_weights_path=finetuned_dino_path
             )
-            print(f"[OK] Loaded Optimized DINO Architecture (DINOv2 backbone)!")
+            if finetuned_dino_path:
+                print(f"[OK] Loaded Optimized DINO Architecture (FINE-TUNED DINOv2 backbone)!")
+            else:
+                print(f"[OK] Loaded Optimized DINO Architecture (DINOv2 backbone)!")
         return detector
     elif model_type == "yolo":
         from models.yolo_adapter import YOLOv8Adapter
@@ -391,7 +412,7 @@ def run_video_detection(
     print("=" * 65 + "\n")
 
     # ── Initialize Components ──
-    detector = load_detector(model_type, weights_path, conf_thresh)
+    detector = load_detector(model_type, weights_path, conf_thresh, enable_tiling=enable_multiscale)
 
     dema_engine = PPEDeMaEngine(
         default_level=hazard_level,
@@ -407,9 +428,9 @@ def run_video_detection(
 
     skip_controller = FrameSkipController(base_skip=frame_skip)
     temporal_smoother = TemporalDetectionSmoother(
-        window_size=5,
+        window_size=10,
         min_confirmations=2,
-        iou_threshold=0.35
+        iou_threshold=0.25
     ) if enable_temporal else None
 
     # Multi-scale config

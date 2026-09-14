@@ -95,7 +95,7 @@ class SimpleIOUTracker:
         not evidence the person left.
     """
 
-    def __init__(self, iou_threshold=0.3, max_misses=3, max_age_without_detection=6):
+    def __init__(self, iou_threshold=0.35, max_misses=2, max_age_without_detection=6):
         self.iou_threshold = iou_threshold
         self.max_misses = max_misses
         self.max_age_without_detection = max_age_without_detection

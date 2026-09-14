@@ -33,6 +33,7 @@ resulting `student.pt` weights are what `PPEFeatureBackbone` loads at
 inference time on the CCTV server.
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -85,7 +86,7 @@ class PPEFeatureBackbone(nn.Module):
     DINOv2 ViT, so the rest of the pipeline doesn't care.
     """
 
-    def __init__(self, mode="distilled", student_weights_path=None, device="cpu"):
+    def __init__(self, mode="distilled", student_weights_path=None, dino_weights_path=None, device="cpu"):
         super().__init__()
         assert mode in ("distilled", "dino")
         self.mode = mode
@@ -104,6 +105,9 @@ class PPEFeatureBackbone(nn.Module):
             # ~15-40x the FLOPs of the distilled path per crop -- see
             # docs/scaling_bottleneck_analysis.docx for the throughput math.
             self.backbone = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
+            if dino_weights_path and os.path.exists(dino_weights_path):
+                state = torch.load(dino_weights_path, map_location=device)
+                self.backbone.load_state_dict(state)
             self.input_size = 224
 
         self.backbone.to(device)

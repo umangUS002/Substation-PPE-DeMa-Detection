@@ -90,6 +90,7 @@ still comes up short).
 """
 
 import torch
+from collections import defaultdict
 import torch.nn as nn
 import torchvision
 from torchvision.models.detection import (
@@ -116,22 +117,24 @@ class DINOAdapterOptimized:
     def __init__(
         self,
         classifier_weights_path=None,
-        person_threshold=0.35,
+        person_threshold=0.50,
         ppe_threshold=0.25,
         device=None,
         tile_grid=(2, 2),
         tile_overlap=0.15,
-        min_person_area=600,
+        min_person_area=2500,
+        min_person_aspect_ratio=0.8,     # height/width must exceed this to be a "person" (filters stones/pipes)
         # --- new knobs ---
         backbone_mode="distilled",       # "distilled" (fast) or "dino" (original, slow/accurate)
         student_weights_path=None,       # required for backbone_mode="distilled" once you've run distillation
         use_fp16=True,
         motion_gating=True,
         detect_stride=3,                 # run the full tiled detector every Nth frame per camera; track in between
-        classify_stride=5,               # re-run PPE classification on a *tracked* person every Nth frame; reuse cached label in between
+        classify_stride=2,               # re-run PPE classification on a *tracked* person every Nth frame; reuse cached label in between
         ppe_cache_stale_after=600,       # drop a track's cached PPE label if untouched this many frames (~40-50s @ 12-15fps)
         max_persons_per_frame=12,
         motion_gate_kwargs=None,
+        **kwargs
     ):
         self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
         self.person_threshold = person_threshold
@@ -139,6 +142,7 @@ class DINOAdapterOptimized:
         self.tile_grid = tile_grid
         self.tile_overlap = tile_overlap
         self.min_person_area = min_person_area
+        self.min_person_aspect_ratio = min_person_aspect_ratio
         self.detect_stride = max(1, detect_stride)
         self.classify_stride = max(1, classify_stride)
         self.ppe_cache_stale_after = ppe_cache_stale_after
@@ -163,6 +167,7 @@ class DINOAdapterOptimized:
         self.backbone = PPEFeatureBackbone(
             mode=backbone_mode,
             student_weights_path=student_weights_path,
+            dino_weights_path=kwargs.get("dino_weights_path", None),
             device=self.device,
         )
 
@@ -184,6 +189,18 @@ class DINOAdapterOptimized:
         self._trackers = {}       # camera_id -> SimpleIOUTracker
         self._frame_counters = {} # camera_id -> int
         self._ppe_cache = {}      # (camera_id, track_id) -> {"frame": int, "hits": {label: conf}}
+
+        # --- PPE Temporal Stabilizer (anti-flicker) ---
+        # Per-track exponential moving average of raw classifier confidence.
+        # Key: (camera_id, track_id) -> {ppe_name: smoothed_confidence}
+        self._ppe_ema = {}        # smoothed running confidence per track
+        self._ppe_ema_alpha = 0.3   # EMA weight for new observation (lower = smoother, less flicker)
+        # Hysteresis thresholds to prevent rapid toggling:
+        #   - A PPE item is shown only once smoothed confidence rises above ppe_on_thresh
+        #   - It stays shown until smoothed confidence drops below ppe_off_thresh
+        self._ppe_on_thresh = 0.32   # must exceed this to turn ON
+        self._ppe_off_thresh = 0.08  # must drop below this to turn OFF
+        self._ppe_display_state = {} # (cam_id, track_id) -> {ppe_name: bool (currently shown)}
 
         self._input_mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
         self._input_std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
@@ -261,8 +278,11 @@ class DINOAdapterOptimized:
             mask = (labels == self.PERSON_CLASS_ID) & (scores > self.person_threshold)
             for box, score in zip(boxes[mask], scores[mask]):
                 full_box = [box[0] + x_off, box[1] + y_off, box[2] + x_off, box[3] + y_off]
-                area = (full_box[2] - full_box[0]) * (full_box[3] - full_box[1])
-                if area >= self.min_person_area:
+                bw = full_box[2] - full_box[0]
+                bh = full_box[3] - full_box[1]
+                area = bw * bh
+                # Filter: minimum area + aspect ratio (person is taller than wide)
+                if area >= self.min_person_area and (bh / max(bw, 1)) >= self.min_person_aspect_ratio:
                     all_boxes.append(full_box)
                     all_scores.append(float(score))
 
@@ -299,21 +319,35 @@ class DINOAdapterOptimized:
         x1, y1, x2, y2 = map(int, box)
         h_frame, w_frame = frame_bgr.shape[:2]
         w, h = x2 - x1, y2 - y1
-        pad_x, pad_y = int(w * 0.15), int(h * 0.15)
+        # Asymmetric padding: 10% horizontal, 25% vertical (helmet is at the very top)
+        pad_x, pad_y = int(w * 0.10), int(h * 0.25)
         x1, y1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
         x2, y2 = min(w_frame, x2 + pad_x), min(h_frame, y2 + pad_y)
         if x2 - x1 < 10 or y2 - y1 < 10:
             return None
 
         crop_bgr = frame_bgr[y1:y2, x1:x2]
-        crop_rgb = crop_bgr[:, :, ::-1]  # cheap CPU BGR->RGB, no cv2 resize here
-        tensor = torch.from_numpy(np.ascontiguousarray(crop_rgb)).permute(2, 0, 1).float().div_(255.0)
+
+        # --- CLAHE preprocessing (matches original dino_adapter.py) ---
+        lab = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_ch = clahe.apply(l_ch)
+        crop_enhanced = cv2.cvtColor(cv2.merge((l_ch, a_ch, b_ch)), cv2.COLOR_LAB2BGR)
+
+        # --- Letterbox to preserve aspect ratio (matches original) ---
+        ch, cw = crop_enhanced.shape[:2]
+        max_side = max(ch, cw)
+        canvas = np.full((max_side, max_side, 3), 128, dtype=np.uint8)
+        x_off = (max_side - cw) // 2
+        y_off = (max_side - ch) // 2
+        canvas[y_off:y_off+ch, x_off:x_off+cw] = crop_enhanced
+
+        crop_rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        crop_resized = cv2.resize(crop_rgb, (target_size, target_size))
+
+        tensor = torch.from_numpy(np.ascontiguousarray(crop_resized)).permute(2, 0, 1).float().div_(255.0)
         tensor = tensor.to(self.device, non_blocking=True)
-        # Resize on GPU instead of cv2.resize on CPU -- this is the vectorizable step
-        # once crops are stacked; per-crop here because input sizes vary.
-        tensor = torch.nn.functional.interpolate(
-            tensor.unsqueeze(0), size=(target_size, target_size), mode="bilinear", align_corners=False
-        ).squeeze(0)
         return tensor
 
     def _run_stage2(self, frame_crop_pairs):
@@ -335,12 +369,40 @@ class DINOAdapterOptimized:
 
         results = []
         for i, prob_array in enumerate(probs):
-            key, box, _ = frame_crop_pairs[i]
+            key, box, _ = frame_crop_pairs[i]  # key = (camera_id, track_id)
+            raw_confs = {self.ppe_classes[ci]: float(prob_array[ci]) for ci in range(len(self.ppe_classes))}
+
+            # --- EMA smoothing per-track ---
+            if key not in self._ppe_ema:
+                # Initialize EMA with the FIRST observation (not 0.0) so labels
+                # can appear immediately on the very first classification.
+                self._ppe_ema[key] = dict(raw_confs)
+                self._ppe_display_state[key] = {name: False for name in self.ppe_classes}
+
+            ema = self._ppe_ema[key]
+            display = self._ppe_display_state[key]
+            alpha = self._ppe_ema_alpha
+
             ppe_hits = {}
-            for class_idx, ppe_name in enumerate(self.ppe_classes):
-                conf = float(prob_array[class_idx])
-                if conf > self.ppe_threshold:
-                    ppe_hits[ppe_name] = conf
+            for ppe_name, raw_conf in raw_confs.items():
+                # Update exponential moving average
+                ema[ppe_name] = alpha * raw_conf + (1 - alpha) * ema[ppe_name]
+                smoothed = ema[ppe_name]
+
+                # Hysteresis: require crossing ON threshold to appear,
+                # and dropping below OFF threshold to disappear.
+                if display.get(ppe_name, False):
+                    # Currently shown -> keep showing unless smoothed drops below OFF threshold
+                    if smoothed < self._ppe_off_thresh:
+                        display[ppe_name] = False
+                    else:
+                        ppe_hits[ppe_name] = smoothed
+                else:
+                    # Currently hidden -> only show once smoothed exceeds ON threshold
+                    if smoothed >= self._ppe_on_thresh:
+                        display[ppe_name] = True
+                        ppe_hits[ppe_name] = smoothed
+
             results.append((key, box, ppe_hits))
         return results
 
@@ -421,5 +483,9 @@ class DINOAdapterOptimized:
         self._frame_counters.pop(camera_id, None)
         for key in [k for k in self._ppe_cache if k[0] == camera_id]:
             del self._ppe_cache[key]
+        for key in [k for k in self._ppe_ema if k[0] == camera_id]:
+            del self._ppe_ema[key]
+        for key in [k for k in self._ppe_display_state if k[0] == camera_id]:
+            del self._ppe_display_state[key]
         if self.motion_gate:
             self.motion_gate.reset(camera_id)
