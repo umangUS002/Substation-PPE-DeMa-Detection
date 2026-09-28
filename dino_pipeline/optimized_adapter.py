@@ -93,10 +93,7 @@ import torch
 from collections import defaultdict
 import torch.nn as nn
 import torchvision
-from torchvision.models.detection import (
-    fasterrcnn_mobilenet_v3_large_320_fpn,
-    FasterRCNN_MobileNet_V3_Large_320_FPN_Weights,
-)
+from ultralytics import YOLO
 from torchvision.transforms import functional as F
 import numpy as np
 import cv2
@@ -117,8 +114,8 @@ class DINOAdapterOptimized:
     def __init__(
         self,
         classifier_weights_path=None,
-        person_threshold=0.50,
-        ppe_threshold=0.25,
+        person_threshold=0.10,
+        ppe_threshold=0.01,
         device=None,
         tile_grid=(2, 2),
         tile_overlap=0.15,
@@ -155,13 +152,10 @@ class DINOAdapterOptimized:
               f"classify_stride={self.classify_stride}, "
               f"backbone_mode={backbone_mode}, fp16={self.use_fp16}")
 
-        # 1. Person Detector (unchanged model choice -- already the lightweight option;
-        #    see docs for the escalation path to an even lighter detector if needed).
-        weights = FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
-        self.person_detector = fasterrcnn_mobilenet_v3_large_320_fpn(weights=weights)
+        # 1. Person Detector (YOLOv8)
+        self.person_detector = YOLO("yolov8s.pt")  # using YOLOv8s for better balance
         self.person_detector.to(self.device)
-        self.person_detector.eval()
-        self.PERSON_CLASS_ID = 1
+        self.PERSON_CLASS_ID = 0
 
         # 2. Feature extractor: distilled CNN by default, DINOv2 available as opt-in.
         self.backbone = PPEFeatureBackbone(
@@ -198,8 +192,8 @@ class DINOAdapterOptimized:
         # Hysteresis thresholds to prevent rapid toggling:
         #   - A PPE item is shown only once smoothed confidence rises above ppe_on_thresh
         #   - It stays shown until smoothed confidence drops below ppe_off_thresh
-        self._ppe_on_thresh = 0.32   # must exceed this to turn ON
-        self._ppe_off_thresh = 0.08  # must drop below this to turn OFF
+        self._ppe_on_thresh = 0.01   # must exceed this to turn ON
+        self._ppe_off_thresh = 0.00  # must drop below this to turn OFF
         self._ppe_display_state = {} # (cam_id, track_id) -> {ppe_name: bool (currently shown)}
 
         self._input_mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
@@ -256,35 +250,39 @@ class DINOAdapterOptimized:
         if not active_idx:
             return [], []
 
-        tile_tensors, tile_offsets = [], []
+        tile_imgs, tile_offsets = [], []
         for idx in active_idx:
             y1, x1, y2, x2 = tiles[idx]
             tile_img = frame_bgr[y1:y2, x1:x2]
-            tile_rgb = cv2.cvtColor(tile_img, cv2.COLOR_BGR2RGB)
-            tile_tensors.append(F.to_tensor(tile_rgb).to(self.device))
+            tile_imgs.append(tile_img)
             tile_offsets.append((y1, x1))
 
-        with torch.inference_mode():
-            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.use_fp16):
-                tile_outputs = self.person_detector(tile_tensors)
+        # YOLOv8 handles batching internally and expects BGR numpy arrays
+        results = self.person_detector.predict(
+            source=tile_imgs, 
+            conf=self.person_threshold, 
+            classes=[self.PERSON_CLASS_ID], 
+            verbose=False
+        )
 
         all_boxes, all_scores = [], []
-        for tile_idx, pd_out in enumerate(tile_outputs):
+        for tile_idx, res in enumerate(results):
             y_off, x_off = tile_offsets[tile_idx]
-            boxes = pd_out["boxes"].float().cpu().numpy()
-            scores = pd_out["scores"].float().cpu().numpy()
-            labels = pd_out["labels"].cpu().numpy()
-
-            mask = (labels == self.PERSON_CLASS_ID) & (scores > self.person_threshold)
-            for box, score in zip(boxes[mask], scores[mask]):
-                full_box = [box[0] + x_off, box[1] + y_off, box[2] + x_off, box[3] + y_off]
+            if res.boxes is None:
+                continue
+                
+            for box in res.boxes:
+                conf = float(box.conf[0].item())
+                xyxy = box.xyxy[0].cpu().numpy().astype(float)
+                
+                full_box = [xyxy[0] + x_off, xyxy[1] + y_off, xyxy[2] + x_off, xyxy[3] + y_off]
                 bw = full_box[2] - full_box[0]
                 bh = full_box[3] - full_box[1]
                 area = bw * bh
                 # Filter: minimum area + aspect ratio (person is taller than wide)
                 if area >= self.min_person_area and (bh / max(bw, 1)) >= self.min_person_aspect_ratio:
                     all_boxes.append(full_box)
-                    all_scores.append(float(score))
+                    all_scores.append(conf)
 
         return self._nms_persons(all_boxes, all_scores, iou_threshold=0.4)
 
@@ -370,7 +368,7 @@ class DINOAdapterOptimized:
         results = []
         for i, prob_array in enumerate(probs):
             key, box, _ = frame_crop_pairs[i]  # key = (camera_id, track_id)
-            raw_confs = {self.ppe_classes[ci]: float(prob_array[ci]) for ci in range(len(self.ppe_classes))}
+            raw_confs = {self.ppe_classes[ci]: float(prob_array[ci]) for ci in range(len(self.ppe_classes)) if self.ppe_classes[ci] != "Gloves"}
 
             # --- EMA smoothing per-track ---
             if key not in self._ppe_ema:

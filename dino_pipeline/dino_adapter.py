@@ -243,6 +243,8 @@ class DINOAdapter:
                 box = crop_to_box[i]
                 
                 for class_idx, ppe_name in enumerate(self.ppe_classes):
+                    if ppe_name == "Gloves":
+                        continue
                     conf = float(prob_array[class_idx])
                     if conf > self.ppe_threshold:
                         results_per_frame[f_idx].append({

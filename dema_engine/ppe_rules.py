@@ -40,8 +40,8 @@ HAZARD_LEVEL_REQUIREMENTS = {
     },
     "Level_2_High_Risk": {
         "description": "High Voltage Work / Electrical Maintenance",
-        "required": {"Helmet", "Footwear", "Gloves"},
-        "optional": set()
+        "required": {"Helmet", "Footwear"},
+        "optional": {"Gloves"}
     }
 }
 
