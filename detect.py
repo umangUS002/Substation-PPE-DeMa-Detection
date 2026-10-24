@@ -118,6 +118,7 @@ def run_detection_stream(
         save_path = os.path.join("output", "dema_detection_output.mp4")
         writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (w, h))
 
+    is_paused = False
     try:
         while cap.isOpened():
             ret, frame = cap.read()
@@ -146,8 +147,44 @@ def run_detection_stream(
 
             if show_window:
                 cv2.imshow("Substation PPE DeMa Detection (SSD-VGG16 Paper Model)", annotated_frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord('q'):
                     break
+                elif key in [ord(' '), ord('p'), ord('P')]:
+                    is_paused = True
+
+                if is_paused:
+                    h, w = annotated_frame.shape[:2]
+                    banner_w = min(620, w - 24)
+                    cv2.rectangle(annotated_frame, (12, h - 45), (12 + banner_w, h - 10), (0, 0, 0), -1)
+                    cv2.rectangle(annotated_frame, (12, h - 45), (12 + banner_w, h - 10), (0, 215, 255), 2)
+                    cv2.putText(
+                        annotated_frame,
+                        "[PAUSED] SPACE / P: Resume | D / N: Next Frame | Q: Quit",
+                        (22, h - 22),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.50,
+                        (0, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    cv2.imshow("Substation PPE DeMa Detection (SSD-VGG16 Paper Model)", annotated_frame)
+
+                    quit_requested = False
+                    while is_paused:
+                        k = cv2.waitKey(30) & 0xFF
+                        if k == ord('q'):
+                            quit_requested = True
+                            break
+                        elif k in [ord(' '), ord('p'), ord('P')]:
+                            is_paused = False
+                            break
+                        elif k in [ord('d'), ord('D'), ord('n'), ord('N')]:
+                            break
+
+                    if quit_requested:
+                        break
 
     finally:
         cap.release()

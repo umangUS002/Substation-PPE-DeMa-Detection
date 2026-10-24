@@ -313,7 +313,7 @@ def draw_video_overlay(frame: np.ndarray, dema_result: dict, fps: float = 0.0, f
 
 # ─── Load Model ─────────────────────────────────────────────────────────────────
 
-def load_detector(model_type: str, weights_path: str = None, conf_thresh: float = 0.20, enable_tiling: bool = True):
+def load_detector(model_type: str, weights_path: str = None, conf_thresh: float = 0.20, enable_tiling: bool = True, person_weights: str = None, person_detector: str = "rcnn"):
     """
     Loads the appropriate model backend.
     """
@@ -336,16 +336,20 @@ def load_detector(model_type: str, weights_path: str = None, conf_thresh: float 
 
         # Check if distilled student weights exist — if so, use the fast backbone
         student_weights = "models/student_backbone.pt"
+        p2_weights = person_weights
+
         if os.path.exists(student_weights):
             # Distilled mode: use MobileNetV3 backbone + its own classifier
             classifier_path = "models/dino_classifier_distilled.pt" if os.path.exists("models/dino_classifier_distilled.pt") else None
             detector = DINOAdapterOptimized(
                 classifier_weights_path=classifier_path,
-                person_threshold=max(0.10, conf_thresh),
+                person_threshold=max(0.20, conf_thresh),
                 ppe_threshold=conf_thresh,
                 tile_grid=grid,
                 backbone_mode="distilled",
-                student_weights_path=student_weights
+                student_weights_path=student_weights,
+                person_detector_type=person_detector,
+                person_weights_path=p2_weights
             )
             print(f"[OK] Loaded FAST Distilled Architecture (MobileNetV3 student)!")
         else:
@@ -354,11 +358,13 @@ def load_detector(model_type: str, weights_path: str = None, conf_thresh: float 
             finetuned_dino_path = "models/dino_backbone_finetuned.pt" if os.path.exists("models/dino_backbone_finetuned.pt") else None
             detector = DINOAdapterOptimized(
                 classifier_weights_path=classifier_path,
-                person_threshold=max(0.10, conf_thresh),
+                person_threshold=max(0.20, conf_thresh),
                 ppe_threshold=conf_thresh,
                 tile_grid=grid,
                 backbone_mode="dino",
-                dino_weights_path=finetuned_dino_path
+                dino_weights_path=finetuned_dino_path,
+                person_detector_type=person_detector,
+                person_weights_path=p2_weights
             )
             if finetuned_dino_path:
                 print(f"[OK] Loaded Optimized DINO Architecture (FINE-TUNED DINOv2 backbone)!")
@@ -386,7 +392,7 @@ def run_video_detection(
     weights_path: str = None,
     conf_thresh: float = 0.20,
     hazard_level: str = "Level_2_High_Risk",
-    model_type: str = "yolo",
+    model_type: str = "optimized-dino",
     save_output: bool = True,
     show_window: bool = True,
     enable_preprocess: bool = True,
@@ -394,6 +400,8 @@ def run_video_detection(
     enable_temporal: bool = True,
     frame_skip: int = 2,
     denoise: bool = False,
+    person_weights: str = None,
+    person_detector: str = "rcnn",
 ):
     """
     Enhanced video detection pipeline with preprocessing, multi-scale, and temporal smoothing.
@@ -402,6 +410,9 @@ def run_video_detection(
     print("  Substation PPE Detection — Video Enhanced Mode")
     print("=" * 65)
     print(f"  Model:          {model_type.upper()}")
+    if model_type == "optimized-dino":
+        pd_name = "Faster R-CNN MobileNetV3 Small (RCNN)" if person_detector == "rcnn" else "YOLOv8"
+        print(f"  Person Detector:{pd_name}")
     print(f"  Source:          {source}")
     print(f"  Hazard Level:   {hazard_level}")
     print(f"  Preprocessing:  {'ON' if enable_preprocess else 'OFF'}")
@@ -409,10 +420,12 @@ def run_video_detection(
     print(f"  Temporal:       {'ON' if enable_temporal else 'OFF'}")
     print(f"  Frame Skip:     {frame_skip}")
     print(f"  Conf Threshold: {conf_thresh}")
+    if person_weights:
+        print(f"  Person Weights: {person_weights}")
     print("=" * 65 + "\n")
 
     # ── Initialize Components ──
-    detector = load_detector(model_type, weights_path, conf_thresh, enable_tiling=enable_multiscale)
+    detector = load_detector(model_type, weights_path, conf_thresh, enable_tiling=enable_multiscale, person_weights=person_weights, person_detector=person_detector)
 
     dema_engine = PPEDeMaEngine(
         default_level=hazard_level,
@@ -455,6 +468,8 @@ def run_video_detection(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
 
     print(f"[INFO] Video: {orig_w}x{orig_h} @ {src_fps:.1f} FPS, ~{total_frames} frames")
+    if show_window:
+        print("[INFO] Controls: [SPACE / P] = Pause/Resume | [D / N] = Step 1 Frame | [Q] = Quit")
 
     # ── Output Writer ──
     writer = None
@@ -474,6 +489,7 @@ def run_video_detection(
     frame_num = 0
     processed_count = 0
     last_dema_result = None
+    is_paused = False
 
     try:
         while cap.isOpened():
@@ -546,8 +562,46 @@ def run_video_detection(
             if show_window:
                 display = cv2.resize(annotated, (min(orig_w, 1280), min(orig_h, 720)))
                 cv2.imshow("PPE DeMa Detection - Video Enhanced", display)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord('q'):
                     break
+                elif key in [ord(' '), ord('p'), ord('P')]:
+                    is_paused = True
+
+                if is_paused:
+                    # Draw pause status overlay bar at bottom
+                    h, w = display.shape[:2]
+                    banner_w = min(620, w - 24)
+                    cv2.rectangle(display, (12, h - 45), (12 + banner_w, h - 10), (0, 0, 0), -1)
+                    cv2.rectangle(display, (12, h - 45), (12 + banner_w, h - 10), (0, 215, 255), 2)
+                    cv2.putText(
+                        display,
+                        "[PAUSED] SPACE / P: Resume | D / N: Next Frame | Q: Quit",
+                        (22, h - 22),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.50,
+                        (0, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    cv2.imshow("PPE DeMa Detection - Video Enhanced", display)
+
+                    quit_requested = False
+                    while is_paused:
+                        k = cv2.waitKey(30) & 0xFF
+                        if k == ord('q'):
+                            quit_requested = True
+                            break
+                        elif k in [ord(' '), ord('p'), ord('P')]:
+                            is_paused = False
+                            break
+                        elif k in [ord('d'), ord('D'), ord('n'), ord('N')]:
+                            # Advance single frame while staying paused
+                            break
+
+                    if quit_requested:
+                        break
 
             # Progress log
             if frame_num % 50 == 0:
@@ -597,6 +651,10 @@ if __name__ == "__main__":
                         help="Enable denoising (slower but reduces compression artifacts)")
     parser.add_argument("--frame-skip", type=int, default=2,
                         help="Base frame skip interval (1=every frame, 2=every other, etc.)")
+    parser.add_argument("--person-weights", type=str, default=None,
+                        help="Optional custom trained YOLO person detector weights (e.g. models/yolov8s_p2_best.pt)")
+    parser.add_argument("--person-detector", type=str, default="rcnn", choices=["rcnn", "yolo"],
+                        help="Person detector for optimized-dino: 'rcnn' (Faster R-CNN MobileNetV3) or 'yolo' (YOLOv8, default 'rcnn')")
 
     args = parser.parse_args()
 
@@ -613,4 +671,6 @@ if __name__ == "__main__":
         enable_temporal=not args.no_temporal,
         frame_skip=args.frame_skip,
         denoise=args.denoise,
+        person_weights=args.person_weights,
+        person_detector=args.person_detector,
     )
