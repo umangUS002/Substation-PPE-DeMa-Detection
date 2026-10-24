@@ -1,4 +1,4 @@
-"""
+﻿"""
 optimized_adapter.py
 ---------------------
 Rewrite of the original DINOAdapter aimed at one target: 25 x 2MP CCTV
@@ -89,13 +89,14 @@ TensorRT/INT8 export, or a second inference server -- if benchmarking
 still comes up short).
 """
 
-import os
 import torch
 from collections import defaultdict
 import torch.nn as nn
 import torchvision
-from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn, FasterRCNN_MobileNet_V3_Large_320_FPN_Weights
-from ultralytics import YOLO
+from torchvision.models.detection import (
+    fasterrcnn_mobilenet_v3_large_320_fpn,
+    FasterRCNN_MobileNet_V3_Large_320_FPN_Weights,
+)
 from torchvision.transforms import functional as F
 import numpy as np
 import cv2
@@ -116,15 +117,14 @@ class DINOAdapterOptimized:
     def __init__(
         self,
         classifier_weights_path=None,
-        person_threshold=0.30,
-        ppe_threshold=0.01,
+        person_threshold=0.50,
+        ppe_threshold=0.25,
         device=None,
         tile_grid=(2, 2),
         tile_overlap=0.15,
-        min_person_area=800,
+        min_person_area=2500,
         min_person_aspect_ratio=0.8,     # height/width must exceed this to be a "person" (filters stones/pipes)
         # --- new knobs ---
-        person_detector_type="rcnn",     # "rcnn" (Faster R-CNN MobileNetV3 Small) or "yolo" (YOLOv8)
         backbone_mode="distilled",       # "distilled" (fast) or "dino" (original, slow/accurate)
         student_weights_path=None,       # required for backbone_mode="distilled" once you've run distillation
         use_fp16=True,
@@ -134,11 +134,9 @@ class DINOAdapterOptimized:
         ppe_cache_stale_after=600,       # drop a track's cached PPE label if untouched this many frames (~40-50s @ 12-15fps)
         max_persons_per_frame=12,
         motion_gate_kwargs=None,
-        person_weights_path=None,        # path to custom trained YOLO person detector (e.g. models/yolov8s_p2_best.pt)
         **kwargs
     ):
         self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
-        self.person_detector_type = person_detector_type.lower()
         self.person_threshold = person_threshold
         self.ppe_threshold = ppe_threshold
         self.tile_grid = tile_grid
@@ -152,31 +150,18 @@ class DINOAdapterOptimized:
         self.use_fp16 = use_fp16 and self.device == "cuda"
 
         print(f"[INFO] Initializing Optimized Two-Stage PPE Pipeline on {self.device}...")
-        print(f"[INFO] Person detector: {self.person_detector_type.upper()}, Tiling: {tile_grid[0]}x{tile_grid[1]} grid, {tile_overlap:.0%} overlap, "
+        print(f"[INFO] Tiling: {tile_grid[0]}x{tile_grid[1]} grid, {tile_overlap:.0%} overlap, "
               f"motion_gating={motion_gating}, detect_stride={self.detect_stride}, "
               f"classify_stride={self.classify_stride}, "
               f"backbone_mode={backbone_mode}, fp16={self.use_fp16}")
 
-        # 1. Person Detector (Faster R-CNN MobileNetV3 or YOLO)
-        if self.person_detector_type == "rcnn":
-            print(f"[INFO] Loading Faster R-CNN MobileNetV3-320 Person Detector on {self.device}...")
-            rcnn_weights = FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
-            self.person_detector = fasterrcnn_mobilenet_v3_large_320_fpn(weights=rcnn_weights)
-            self.person_detector.to(self.device)
-            self.person_detector.eval()
-            self.PERSON_CLASS_ID = 1  # 1 is Person in torchvision COCO models
-            print(f"[OK] Loaded Faster R-CNN Person Detector (Person class ID: {self.PERSON_CLASS_ID})")
-        else:
-            weights_to_use = person_weights_path if (person_weights_path and os.path.exists(person_weights_path)) else "yolov8s.pt"
-            self.person_detector = YOLO(weights_to_use)
-            self.person_detector.to(self.device)
-            self.PERSON_CLASS_ID = 0
-            if hasattr(self.person_detector, "names") and isinstance(self.person_detector.names, dict):
-                for k, v in self.person_detector.names.items():
-                    if str(v).lower() in ["person", "human", "worker"]:
-                        self.PERSON_CLASS_ID = int(k)
-                        break
-            print(f"[OK] Loaded YOLO person detector from '{weights_to_use}' (Person class ID: {self.PERSON_CLASS_ID})")
+        # 1. Person Detector (unchanged model choice -- already the lightweight option;
+        #    see docs for the escalation path to an even lighter detector if needed).
+        weights = FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
+        self.person_detector = fasterrcnn_mobilenet_v3_large_320_fpn(weights=weights)
+        self.person_detector.to(self.device)
+        self.person_detector.eval()
+        self.PERSON_CLASS_ID = 1
 
         # 2. Feature extractor: distilled CNN by default, DINOv2 available as opt-in.
         self.backbone = PPEFeatureBackbone(
@@ -213,8 +198,8 @@ class DINOAdapterOptimized:
         # Hysteresis thresholds to prevent rapid toggling:
         #   - A PPE item is shown only once smoothed confidence rises above ppe_on_thresh
         #   - It stays shown until smoothed confidence drops below ppe_off_thresh
-        self._ppe_on_thresh = 0.01   # must exceed this to turn ON
-        self._ppe_off_thresh = 0.00  # must drop below this to turn OFF
+        self._ppe_on_thresh = 0.32   # must exceed this to turn ON
+        self._ppe_off_thresh = 0.08  # must drop below this to turn OFF
         self._ppe_display_state = {} # (cam_id, track_id) -> {ppe_name: bool (currently shown)}
 
         self._input_mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
@@ -271,54 +256,35 @@ class DINOAdapterOptimized:
         if not active_idx:
             return [], []
 
-        tile_imgs, tile_offsets = [], []
+        tile_tensors, tile_offsets = [], []
         for idx in active_idx:
             y1, x1, y2, x2 = tiles[idx]
             tile_img = frame_bgr[y1:y2, x1:x2]
-            tile_imgs.append(tile_img)
+            tile_rgb = cv2.cvtColor(tile_img, cv2.COLOR_BGR2RGB)
+            tile_tensors.append(F.to_tensor(tile_rgb).to(self.device))
             tile_offsets.append((y1, x1))
 
-        all_boxes, all_scores = [], []
-        if self.person_detector_type == "rcnn":
-            tile_tensors = [F.to_tensor(cv2.cvtColor(t_img, cv2.COLOR_BGR2RGB)).to(self.device) for t_img in tile_imgs]
-            with torch.inference_mode():
+        with torch.inference_mode():
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.use_fp16):
                 tile_outputs = self.person_detector(tile_tensors)
-            for tile_idx, pd_out in enumerate(tile_outputs):
-                y_off, x_off = tile_offsets[tile_idx]
-                boxes = pd_out['boxes'].cpu().numpy()
-                scores = pd_out['scores'].cpu().numpy()
-                labels = pd_out['labels'].cpu().numpy()
-                mask = (labels == self.PERSON_CLASS_ID) & (scores >= self.person_threshold)
-                for box, score in zip(boxes[mask], scores[mask]):
-                    full_box = [float(box[0] + x_off), float(box[1] + y_off), float(box[2] + x_off), float(box[3] + y_off)]
-                    bw = full_box[2] - full_box[0]
-                    bh = full_box[3] - full_box[1]
-                    area = bw * bh
-                    if area >= self.min_person_area and (bh / max(bw, 1)) >= self.min_person_aspect_ratio:
-                        all_boxes.append(full_box)
-                        all_scores.append(float(score))
-        else:
-            # YOLOv8 handles batching internally and expects BGR numpy arrays
-            results = self.person_detector.predict(
-                source=tile_imgs, 
-                conf=self.person_threshold, 
-                classes=[self.PERSON_CLASS_ID], 
-                verbose=False
-            )
-            for tile_idx, res in enumerate(results):
-                y_off, x_off = tile_offsets[tile_idx]
-                if res.boxes is None:
-                    continue
-                for box in res.boxes:
-                    conf = float(box.conf[0].item())
-                    xyxy = box.xyxy[0].cpu().numpy().astype(float)
-                    full_box = [xyxy[0] + x_off, xyxy[1] + y_off, xyxy[2] + x_off, xyxy[3] + y_off]
-                    bw = full_box[2] - full_box[0]
-                    bh = full_box[3] - full_box[1]
-                    area = bw * bh
-                    if area >= self.min_person_area and (bh / max(bw, 1)) >= self.min_person_aspect_ratio:
-                        all_boxes.append(full_box)
-                        all_scores.append(conf)
+
+        all_boxes, all_scores = [], []
+        for tile_idx, pd_out in enumerate(tile_outputs):
+            y_off, x_off = tile_offsets[tile_idx]
+            boxes = pd_out["boxes"].float().cpu().numpy()
+            scores = pd_out["scores"].float().cpu().numpy()
+            labels = pd_out["labels"].cpu().numpy()
+
+            mask = (labels == self.PERSON_CLASS_ID) & (scores > self.person_threshold)
+            for box, score in zip(boxes[mask], scores[mask]):
+                full_box = [box[0] + x_off, box[1] + y_off, box[2] + x_off, box[3] + y_off]
+                bw = full_box[2] - full_box[0]
+                bh = full_box[3] - full_box[1]
+                area = bw * bh
+                # Filter: minimum area + aspect ratio (person is taller than wide)
+                if area >= self.min_person_area and (bh / max(bw, 1)) >= self.min_person_aspect_ratio:
+                    all_boxes.append(full_box)
+                    all_scores.append(float(score))
 
         return self._nms_persons(all_boxes, all_scores, iou_threshold=0.4)
 
@@ -404,7 +370,7 @@ class DINOAdapterOptimized:
         results = []
         for i, prob_array in enumerate(probs):
             key, box, _ = frame_crop_pairs[i]  # key = (camera_id, track_id)
-            raw_confs = {self.ppe_classes[ci]: float(prob_array[ci]) for ci in range(len(self.ppe_classes)) if self.ppe_classes[ci] != "Gloves"}
+            raw_confs = {self.ppe_classes[ci]: float(prob_array[ci]) for ci in range(len(self.ppe_classes))}
 
             # --- EMA smoothing per-track ---
             if key not in self._ppe_ema:
@@ -510,8 +476,6 @@ class DINOAdapterOptimized:
         ]
         for key in stale_keys:
             del self._ppe_cache[key]
-            self._ppe_ema.pop(key, None)
-            self._ppe_display_state.pop(key, None)
 
     def reset_camera(self, camera_id):
         """Call on stream reconnect / scene cut to drop stale motion + tracking state."""

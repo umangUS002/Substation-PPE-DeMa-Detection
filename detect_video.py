@@ -313,7 +313,7 @@ def draw_video_overlay(frame: np.ndarray, dema_result: dict, fps: float = 0.0, f
 
 # ─── Load Model ─────────────────────────────────────────────────────────────────
 
-def load_detector(model_type: str, weights_path: str = None, conf_thresh: float = 0.20, enable_tiling: bool = True, person_weights: str = None, person_detector: str = "rcnn"):
+def load_detector(model_type: str, weights_path: str = None, conf_thresh: float = 0.20, enable_tiling: bool = True):
     """
     Loads the appropriate model backend.
     """
@@ -336,20 +336,16 @@ def load_detector(model_type: str, weights_path: str = None, conf_thresh: float 
 
         # Check if distilled student weights exist — if so, use the fast backbone
         student_weights = "models/student_backbone.pt"
-        p2_weights = person_weights
-
         if os.path.exists(student_weights):
             # Distilled mode: use MobileNetV3 backbone + its own classifier
             classifier_path = "models/dino_classifier_distilled.pt" if os.path.exists("models/dino_classifier_distilled.pt") else None
             detector = DINOAdapterOptimized(
                 classifier_weights_path=classifier_path,
-                person_threshold=max(0.20, conf_thresh),
+                person_threshold=max(0.50, conf_thresh),
                 ppe_threshold=conf_thresh,
                 tile_grid=grid,
                 backbone_mode="distilled",
-                student_weights_path=student_weights,
-                person_detector_type=person_detector,
-                person_weights_path=p2_weights
+                student_weights_path=student_weights
             )
             print(f"[OK] Loaded FAST Distilled Architecture (MobileNetV3 student)!")
         else:
@@ -358,13 +354,11 @@ def load_detector(model_type: str, weights_path: str = None, conf_thresh: float 
             finetuned_dino_path = "models/dino_backbone_finetuned.pt" if os.path.exists("models/dino_backbone_finetuned.pt") else None
             detector = DINOAdapterOptimized(
                 classifier_weights_path=classifier_path,
-                person_threshold=max(0.20, conf_thresh),
+                person_threshold=max(0.50, conf_thresh),
                 ppe_threshold=conf_thresh,
                 tile_grid=grid,
                 backbone_mode="dino",
-                dino_weights_path=finetuned_dino_path,
-                person_detector_type=person_detector,
-                person_weights_path=p2_weights
+                dino_weights_path=finetuned_dino_path
             )
             if finetuned_dino_path:
                 print(f"[OK] Loaded Optimized DINO Architecture (FINE-TUNED DINOv2 backbone)!")
@@ -400,8 +394,6 @@ def run_video_detection(
     enable_temporal: bool = True,
     frame_skip: int = 2,
     denoise: bool = False,
-    person_weights: str = None,
-    person_detector: str = "rcnn",
 ):
     """
     Enhanced video detection pipeline with preprocessing, multi-scale, and temporal smoothing.
@@ -410,9 +402,6 @@ def run_video_detection(
     print("  Substation PPE Detection — Video Enhanced Mode")
     print("=" * 65)
     print(f"  Model:          {model_type.upper()}")
-    if model_type == "optimized-dino":
-        pd_name = "Faster R-CNN MobileNetV3 Small (RCNN)" if person_detector == "rcnn" else "YOLOv8"
-        print(f"  Person Detector:{pd_name}")
     print(f"  Source:          {source}")
     print(f"  Hazard Level:   {hazard_level}")
     print(f"  Preprocessing:  {'ON' if enable_preprocess else 'OFF'}")
@@ -420,12 +409,10 @@ def run_video_detection(
     print(f"  Temporal:       {'ON' if enable_temporal else 'OFF'}")
     print(f"  Frame Skip:     {frame_skip}")
     print(f"  Conf Threshold: {conf_thresh}")
-    if person_weights:
-        print(f"  Person Weights: {person_weights}")
     print("=" * 65 + "\n")
 
     # ── Initialize Components ──
-    detector = load_detector(model_type, weights_path, conf_thresh, enable_tiling=enable_multiscale, person_weights=person_weights, person_detector=person_detector)
+    detector = load_detector(model_type, weights_path, conf_thresh, enable_tiling=enable_multiscale)
 
     dema_engine = PPEDeMaEngine(
         default_level=hazard_level,
@@ -651,11 +638,6 @@ if __name__ == "__main__":
                         help="Enable denoising (slower but reduces compression artifacts)")
     parser.add_argument("--frame-skip", type=int, default=2,
                         help="Base frame skip interval (1=every frame, 2=every other, etc.)")
-    parser.add_argument("--person-weights", type=str, default=None,
-                        help="Optional custom trained YOLO person detector weights (e.g. models/yolov8s_p2_best.pt)")
-    parser.add_argument("--person-detector", type=str, default="rcnn", choices=["rcnn", "yolo"],
-                        help="Person detector for optimized-dino: 'rcnn' (Faster R-CNN MobileNetV3) or 'yolo' (YOLOv8, default 'rcnn')")
-
     args = parser.parse_args()
 
     run_video_detection(
@@ -671,6 +653,4 @@ if __name__ == "__main__":
         enable_temporal=not args.no_temporal,
         frame_skip=args.frame_skip,
         denoise=args.denoise,
-        person_weights=args.person_weights,
-        person_detector=args.person_detector,
     )
