@@ -1,10 +1,14 @@
 import torch
 import torch.nn as nn
 import torchvision
-from torchvision.models.detection import fasterrcnn_mobilenet_v3_large_320_fpn, FasterRCNN_MobileNet_V3_Large_320_FPN_Weights
 from torchvision.transforms import functional as F
 import numpy as np
 import cv2
+
+try:
+    from .rcnn_detector import get_faster_rcnn_detector
+except (ImportError, ValueError):
+    from dino_pipeline.rcnn_detector import get_faster_rcnn_detector
 
 class PPEClassifierHead(nn.Module):
     """
@@ -29,23 +33,21 @@ class DINOAdapter:
     to be detected by the 320px person detector.
     """
     def __init__(self, classifier_weights_path=None, person_threshold=0.35, ppe_threshold=0.25, 
-                 device=None, tile_grid=(2, 2), tile_overlap=0.15, min_person_area=600):
+                 device=None, tile_grid=(2, 2), tile_overlap=0.15, min_person_area=600,
+                 rcnn_model_size="medium"):
         self.device = device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
         self.person_threshold = person_threshold
         self.ppe_threshold = ppe_threshold
         self.tile_grid = tile_grid          # (rows, cols) tiling grid
         self.tile_overlap = tile_overlap    # overlap fraction between tiles
         self.min_person_area = min_person_area  # minimum bbox area to filter false positives
+        self.rcnn_model_size = rcnn_model_size
         
         print(f"[INFO] Initializing Two-Stage DINO Pipeline on {self.device}...")
         print(f"[INFO] Tiling: {tile_grid[0]}x{tile_grid[1]} grid, {tile_overlap:.0%} overlap")
         
-        # 1. Person Detector (MobileNetV3 320px - fast on CPU, ~7 FPS per tile)
-        print("[INFO] Loading Person Detector (Faster R-CNN MobileNetV3-320)...")
-        weights = FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
-        self.person_detector = fasterrcnn_mobilenet_v3_large_320_fpn(weights=weights)
-        self.person_detector.to(self.device)
-        self.person_detector.eval()
+        # 1. Person Detector (Faster R-CNN: ResNet-50 FPN V2 for 'medium', MobileNetV3 for 'small')
+        self.person_detector = get_faster_rcnn_detector(model_size=self.rcnn_model_size, device=self.device)
         self.PERSON_CLASS_ID = 1 
         
         # 2. Feature Extractor

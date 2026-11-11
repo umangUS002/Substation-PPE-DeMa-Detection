@@ -1,4 +1,4 @@
-﻿"""
+"""
 optimized_adapter.py
 ---------------------
 Rewrite of the original DINOAdapter aimed at one target: 25 x 2MP CCTV
@@ -93,13 +93,14 @@ import torch
 from collections import defaultdict
 import torch.nn as nn
 import torchvision
-from torchvision.models.detection import (
-    fasterrcnn_mobilenet_v3_large_320_fpn,
-    FasterRCNN_MobileNet_V3_Large_320_FPN_Weights,
-)
 from torchvision.transforms import functional as F
 import numpy as np
 import cv2
+
+try:
+    from .rcnn_detector import get_faster_rcnn_detector
+except (ImportError, ValueError):
+    from dino_pipeline.rcnn_detector import get_faster_rcnn_detector
 
 from dino_pipeline.motion_gate import MotionGate
 from dino_pipeline.person_tracker import SimpleIOUTracker
@@ -125,6 +126,7 @@ class DINOAdapterOptimized:
         min_person_area=2500,
         min_person_aspect_ratio=0.8,     # height/width must exceed this to be a "person" (filters stones/pipes)
         # --- new knobs ---
+        rcnn_model_size="medium",        # "medium" (Faster R-CNN ResNet-50 FPN V2) or "small" (MobileNetV3 320 FPN)
         backbone_mode="distilled",       # "distilled" (fast) or "dino" (original, slow/accurate)
         student_weights_path=None,       # required for backbone_mode="distilled" once you've run distillation
         use_fp16=True,
@@ -148,19 +150,16 @@ class DINOAdapterOptimized:
         self.ppe_cache_stale_after = ppe_cache_stale_after
         self.max_persons_per_frame = max_persons_per_frame
         self.use_fp16 = use_fp16 and self.device == "cuda"
+        self.rcnn_model_size = rcnn_model_size
 
         print(f"[INFO] Initializing Optimized Two-Stage PPE Pipeline on {self.device}...")
-        print(f"[INFO] Tiling: {tile_grid[0]}x{tile_grid[1]} grid, {tile_overlap:.0%} overlap, "
+        print(f"[INFO] Person detector: Faster R-CNN ({self.rcnn_model_size}), Tiling: {tile_grid[0]}x{tile_grid[1]} grid, {tile_overlap:.0%} overlap, "
               f"motion_gating={motion_gating}, detect_stride={self.detect_stride}, "
               f"classify_stride={self.classify_stride}, "
               f"backbone_mode={backbone_mode}, fp16={self.use_fp16}")
 
-        # 1. Person Detector (unchanged model choice -- already the lightweight option;
-        #    see docs for the escalation path to an even lighter detector if needed).
-        weights = FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT
-        self.person_detector = fasterrcnn_mobilenet_v3_large_320_fpn(weights=weights)
-        self.person_detector.to(self.device)
-        self.person_detector.eval()
+        # 1. Person Detector (Faster R-CNN: ResNet-50 FPN V2 for 'medium', MobileNetV3 for 'small')
+        self.person_detector = get_faster_rcnn_detector(model_size=self.rcnn_model_size, device=self.device)
         self.PERSON_CLASS_ID = 1
 
         # 2. Feature extractor: distilled CNN by default, DINOv2 available as opt-in.
